@@ -392,6 +392,96 @@ pub(crate) fn trim() {
     }
 }
 
+/// The driver's shader cache files mapped into the process (by base and
+/// bytes), as last found ([`trim_driver_cache`]), and when they were found.
+static DRIVER_CACHE: Mutex<(Vec<(usize, usize)>, u64)> = Mutex::new((Vec::new(), 0));
+/// Bytes of the driver's cache let go from memory since the start, and
+/// when last.
+static DRIVER_TRIMMED: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
+static DRIVER_TRIMMING: AtomicBool = AtomicBool::new(false);
+
+/// Lets the pages of the graphics driver's own shader cache files go from
+/// the process's memory every ten seconds, as [`trim`] does for the
+/// library's file. The driver maps its whole cache (NVIDIA's `.nvph` files
+/// in `DXCache`; Windows' `D3DSCache`): 8 GB and 4 GB, 10.2 GB of them in
+/// the process's memory in ForwardVI's sampling run of 26 November, a
+/// third of the PC's. Pages let go stay in Windows' file cache and come
+/// back on the next read; the files are looked for once a minute, above
+/// 1 TiB only (the host's mappings), on a thread of its own.
+/// `VICTORY_DRIVER_CACHE_TRIM=0`: the pages stay until Windows takes them.
+pub(crate) fn trim_driver_cache() {
+    static ON: OnceLock<bool> = OnceLock::new();
+    if !*ON.get_or_init(|| std::env::var_os("VICTORY_DRIVER_CACHE_TRIM").is_none_or(|v| v != "0")) {
+        return;
+    }
+    let now = crate::host::now_ms();
+    if now < DRIVER_TRIMMED[1].load(Ordering::Relaxed) + 10_000 || DRIVER_TRIMMING.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    DRIVER_TRIMMED[1].store(now, Ordering::Relaxed);
+    let work = move || {
+        let regions = {
+            let mut found = DRIVER_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+            if found.0.is_empty() || now >= found.1 + 60_000 {
+                *found = (driver_cache_mappings(), now);
+                let mb = found.0.iter().map(|r| r.1).sum::<usize>() >> 20;
+                tracing::info!(files = found.0.len(), mb, "the driver's shader cache files mapped into the process (let go from memory every 10 s)");
+            }
+            found.0.clone()
+        };
+        for (at, len) in regions {
+            // SAFETY: a mapped view of the driver's (the driver unmaps it
+            // only when the device goes); unlocking pages that are not
+            // locked fails, as expected, and takes them out of the working
+            // set.
+            unsafe { windows_sys::Win32::System::Memory::VirtualUnlock(at as *const _, len) };
+            DRIVER_TRIMMED[0].fetch_add(len as u64, Ordering::Relaxed);
+        }
+        DRIVER_TRIMMING.store(false, Ordering::Relaxed);
+    };
+    if std::thread::Builder::new().name("victory-driver-cache-trim".into()).spawn(work).is_err() {
+        DRIVER_TRIMMING.store(false, Ordering::Relaxed);
+    }
+}
+
+/// The views above 1 TiB of the driver's shader cache files: `(base,
+/// bytes)` of each mapping whose file lies in a `DXCache` or `D3DSCache`
+/// folder.
+fn driver_cache_mappings() -> Vec<(usize, usize)> {
+    use windows_sys::Win32::System::Memory::{MEM_COMMIT, MEM_MAPPED, MEMORY_BASIC_INFORMATION, VirtualQuery};
+    use windows_sys::Win32::System::ProcessStatus::K32GetMappedFileNameW;
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+    let mut out: Vec<(usize, usize)> = Vec::new();
+    let mut at = 1usize << 40;
+    loop {
+        // SAFETY: plain data filled in by the query.
+        let mut m: MEMORY_BASIC_INFORMATION = unsafe { std::mem::zeroed() };
+        // SAFETY: a valid out pointer of the right size.
+        if unsafe { VirtualQuery(at as *const _, &mut m, size_of_val(&m)) } == 0 {
+            break;
+        }
+        if m.Type == MEM_MAPPED && m.State == MEM_COMMIT {
+            let base = m.AllocationBase as usize;
+            let mut name = [0u16; 520];
+            // SAFETY: our own process; the buffer holds that many characters.
+            let n = unsafe { K32GetMappedFileNameW(GetCurrentProcess(), base as *const _, name.as_mut_ptr(), name.len() as u32) };
+            let name = String::from_utf16_lossy(&name[..n as usize]).to_ascii_lowercase();
+            if name.contains("\\dxcache\\") || name.contains("\\d3dscache\\") {
+                match out.last_mut() {
+                    Some(last) if last.0 + last.1 == m.BaseAddress as usize => last.1 += m.RegionSize,
+                    _ => out.push((m.BaseAddress as usize, m.RegionSize)),
+                }
+            }
+        }
+        let next = (m.BaseAddress as usize).saturating_add(m.RegionSize);
+        if next <= at {
+            break;
+        }
+        at = next;
+    }
+    out
+}
+
 struct Library {
     library: ID3D12PipelineLibrary1,
     /// The blob the library was made from: it must outlive the library.
