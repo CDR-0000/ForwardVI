@@ -646,6 +646,44 @@ fn threads_are_followed_by_what_they_were_seen_doing() {
     sampler.tick();
 }
 
+/// With a rolling window (`VICTORY_PROFILE_LAST`) the sampler goes on
+/// through every window: the last whole one is kept as `_prev`, written
+/// near the end, and the part after it is the report at the end.
+#[test]
+fn a_rolling_window_keeps_the_last_whole_window() {
+    let stop = Arc::new(AtomicBool::new(false));
+    let (_, busy) = thread({
+        let stop = stop.clone();
+        move || {
+            std::hint::black_box(profile_test_spins(&stop));
+        }
+    });
+    let folder = std::env::temp_dir().join(format!("victory_profile_last_{}", std::process::id()));
+    std::fs::create_dir_all(&folder).unwrap();
+    let mut settings = config(500);
+    settings.out = folder.join("profile.txt");
+    (settings.every, settings.length, settings.last, settings.busy) = (30.0, Some(3.5), Some(1.0), 2);
+    let (out, prev) = (settings.out.clone(), folder.join("profile_prev.txt"));
+    let began = std::time::SystemTime::now();
+    std::thread::spawn(move || run(settings)).join().unwrap();
+    stop.store(true, Relaxed);
+    busy.join().unwrap();
+    let kept = std::fs::metadata(&prev).and_then(|m| m.modified()).unwrap();
+    let text = std::fs::read_to_string(&prev).unwrap();
+    let tail = std::fs::read_to_string(&out).unwrap();
+    let _ = std::fs::remove_dir_all(&folder);
+    // The third window's, not the first's: the sampler went on.
+    assert!(kept.duration_since(began).unwrap().as_secs_f64() >= 2.5, "{kept:?}");
+    let seconds: f64 = text
+        .split("sampled ")
+        .nth(1)
+        .and_then(|rest| rest.split(' ').next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| panic!("{text}"));
+    assert!((0.7..1.5).contains(&seconds), "a window of {seconds} s");
+    assert!(tail.contains("sampled "), "{tail}");
+}
+
 /// The sampler's own thread, as the game runs it: it finds a worker by
 /// its name and a busy thread by its work, and writes the report and the
 /// stacks file when its time is up.

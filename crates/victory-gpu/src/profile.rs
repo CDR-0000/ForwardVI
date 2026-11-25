@@ -296,6 +296,12 @@ struct Config {
     /// Seconds before the first look, and after how many more the last.
     after: f64,
     length: Option<f64>,
+    /// `VICTORY_PROFILE_LAST`: a rolling window of this many seconds. At
+    /// each window's end the report is written and kept as `<out>_prev`
+    /// (with its `.folded`), and the samples start over: a run stopped a few
+    /// seconds into a scene leaves its last whole window there, the frames
+    /// just before the exit, and the part after it in `out`.
+    last: Option<f64>,
     /// Frames kept of a stack, from the innermost.
     depth: usize,
     /// Bytes copied of a stack at most.
@@ -331,6 +337,7 @@ impl Config {
             every: 30.0,
             after: 0.0,
             length: None,
+            last: None,
             depth: 48,
             stack: 128 << 10,
             most: 24,
@@ -358,6 +365,7 @@ impl Config {
         config.every = seconds("VICTORY_PROFILE_EVERY", 1.0).unwrap_or(config.every);
         config.after = seconds("VICTORY_PROFILE_AFTER", 0.0).unwrap_or(0.0);
         config.length = seconds("VICTORY_PROFILE_FOR", 1.0);
+        config.last = seconds("VICTORY_PROFILE_LAST", 1.0);
         let count = |name: &str, usual: usize, most: usize| {
             env_number(name).map_or(usual, |v| (v.max(0.0) as usize).min(most))
         };
@@ -2711,6 +2719,46 @@ impl Sampler {
 
     /// Writes the report and the stacks file, each whole or not at all (a
     /// process ended in the middle leaves the last ones).
+    /// The report just written, kept as `<out>_prev` (and its `.folded`)
+    /// ([`Config::last`]).
+    fn keep_as_previous(&self) {
+        let out = self.config.out.clone();
+        let named = |suffix: &str| {
+            let stem = out.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            let ext = out.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+            out.with_file_name(format!("{stem}_prev{ext}{suffix}"))
+        };
+        let mut folded = out.clone().into_os_string();
+        folded.push(".folded");
+        let _ = std::fs::rename(&out, named(""));
+        let _ = std::fs::rename(PathBuf::from(folded), named(".folded"));
+    }
+
+    /// Forgets the samples so far: the next report covers what comes after
+    /// ([`Config::last`]). The threads followed and their pacing stay.
+    fn start_over(&mut self) {
+        for t in &mut self.threads {
+            t.tree = Tree::new();
+            // Its last look's node was in the old tree: a look that finds
+            // the thread not run since would add to a node that is gone
+            // (it took the sampler's thread down after its first window).
+            t.last = None;
+            t.looks = 0;
+            t.reused = 0;
+            t.missed = 0;
+            t.cut = 0;
+        }
+        self.ticks = 0;
+        self.late = 0;
+        self.wall = 0;
+        self.presented = 0;
+        self.held = 0;
+        self.held_ns = 0;
+        self.held_longest = 0;
+        self.held_by = [0; 256];
+        self.nodes = 0;
+    }
+
     fn write(&mut self) {
         let report = self.report();
         let out = self.config.out.clone();
@@ -2937,6 +2985,8 @@ fn run(config: Config) {
     sampler.resync();
     let began = Instant::now();
     let (mut scan, mut report) = (began + SCAN, began + every);
+    let last = sampler.config.last.map(Duration::from_secs_f64);
+    let mut window = last.map(|l| began + l);
     while !STOP.load(Relaxed) && length.is_none_or(|length| began.elapsed() < length) {
         pace.wait();
         sampler.tick();
@@ -2945,7 +2995,15 @@ fn run(config: Config) {
             sampler.rescan();
             scan = now + SCAN;
         }
-        if now >= report {
+        if let (Some(at), Some(l)) = (window, last)
+            && now >= at
+        {
+            sampler.write();
+            sampler.keep_as_previous();
+            sampler.start_over();
+            window = Some(Instant::now() + l);
+            report = Instant::now() + every;
+        } else if now >= report && last.is_none() {
             sampler.write();
             report = Instant::now() + every;
         }
