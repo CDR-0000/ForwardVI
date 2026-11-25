@@ -55,6 +55,7 @@ impl Pending {
     }
 
     fn make(&self) {
+        profile_scope!("make pipeline");
         self.made
             .get_or_init(|| HostPipeline::new(&self.shaders, self.graphics.as_deref()));
         let (lock, done) = &DONE;

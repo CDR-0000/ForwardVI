@@ -8,6 +8,8 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+tracing-chrome = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }
 anyhow.workspace = true
 thiserror.workspace = true
 serde.workspace = true
@@ -18,6 +20,9 @@ tracing-subscriber.workspace = true
 tempfile.workspace = true
 
 [features]
+# Frame traces: spans of target "profile" go to a trace file for Perfetto
+# (see docs/profiling.md).
+profile = ["dep:tracing-chrome", "dep:tracing"]
 # Lets `VICTORY_LOG` enable debug and trace output.
 diagnostics = []
 

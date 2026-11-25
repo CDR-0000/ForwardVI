@@ -15,6 +15,15 @@
 //! share, [`console`] which console model the title sees. Planned:
 //! `present` (swap chain).
 
+/// With the `profile` feature, a span of target "profile" for the rest of
+/// the scope: a step in the frame trace. Nothing without the feature.
+macro_rules! profile_scope {
+    ($name:literal) => {
+        #[cfg(feature = "profile")]
+        let _profile_scope = tracing::span!(target: "profile", tracing::Level::INFO, $name).entered();
+    };
+}
+
 #[cfg(all(windows, feature = "diagnostics"))]
 mod capture;
 pub mod console;
@@ -65,3 +74,22 @@ pub use watch::{
     KernelWrite, title_memory_reading, title_memory_remapped, title_memory_remapping,
     title_memory_written, writing as kernel_will_write,
 };
+
+/// Ends the frame span on the presenting thread and starts the next (the
+/// `profile` feature): in the trace, each frame is a span from one present to
+/// the next, numbered, with the steps that ran on that thread inside it.
+#[cfg(feature = "profile")]
+pub(crate) fn profile_frame() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static FRAMES: AtomicU64 = AtomicU64::new(0);
+    thread_local! {
+        static FRAME: std::cell::RefCell<Option<tracing::span::EnteredSpan>> =
+            const { std::cell::RefCell::new(None) };
+    }
+    let number = FRAMES.fetch_add(1, Ordering::Relaxed);
+    FRAME.with(|frame| {
+        let mut frame = frame.borrow_mut();
+        frame.take();
+        *frame = Some(tracing::span!(target: "profile", tracing::Level::INFO, "frame", number).entered());
+    });
+}

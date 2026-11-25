@@ -760,6 +760,9 @@ extern "system" fn present(
     plane_parameters: *const Plane,
     _parameters: *const u8,
 ) -> HRESULT {
+    // A frame of the trace ends at each present, and the next one begins.
+    #[cfg(feature = "profile")]
+    crate::profile_frame();
     #[cfg(all(windows, feature = "diagnostics"))]
     crate::copystat::present_begins();
     // Submissions sent to the card and not waited for are settled first,

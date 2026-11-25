@@ -2264,6 +2264,7 @@ pub(crate) fn settle_for_fence() {
 /// Resets the host lists of settled flights and keeps them for reuse, as
 /// a queue does for the lists it ran (`crate::list::recycle`).
 fn land() {
+    profile_scope!("copy back");
     let landed = std::mem::take(&mut line().landed);
     for (lists, order) in landed {
         crate::list::recycle(lists, &order);
@@ -3075,6 +3076,7 @@ impl Host {
     /// then stores the hashes it makes (see [`flagged_pieces`] and
     /// `relay`).
     fn card_before(&self, runs: &[&HostList], flown: bool) -> Option<CardPlan> {
+        profile_scope!("prepare copies");
         use std::sync::Arc;
         if !crate::shadow::cards() {
             return None;
@@ -3716,6 +3718,7 @@ impl Host {
     /// Runs closed lists and waits for them, and with [`late`] for
     /// everything sent to the card before them, which is settled first.
     pub(crate) fn execute(&self, runs: &[&HostList]) {
+        profile_scope!("submission");
         let _ = self.submit(runs, false);
     }
 
@@ -3822,6 +3825,7 @@ impl Host {
     /// the merge writes the copies' CPU side, which a flight still on the
     /// card may be writing too.
     fn settle(&self, submitted: &mut u64, why: usize) {
+        profile_scope!("wait for the card");
         if !late() {
             return;
         }
@@ -3966,6 +3970,7 @@ impl Host {
     /// to be done once they have run comes back with the submission lock
     /// still held.
     fn submit<'a>(&'a self, runs: &[&HostList], late: bool) -> Option<(std::sync::MutexGuard<'a, u64>, Sent)> {
+        profile_scope!("send to the card");
         #[cfg(feature = "diagnostics")]
         let called = std::time::Instant::now();
         #[cfg(feature = "diagnostics")]
@@ -4146,7 +4151,10 @@ impl Host {
                 match waited {
                     Ok(()) => {
                         working(false);
-                        WaitForSingleObject(self.event, INFINITE);
+                        {
+                            profile_scope!("wait for the card to finish");
+                            WaitForSingleObject(self.event, INFINITE);
+                        }
                         stood(started);
                         working(true);
                     }
@@ -5186,6 +5194,7 @@ impl HostList {
     /// (the title's big buffers, a 174 MB one among them, are read by most
     /// lists of a submission, through many ranges).
     fn run_deferred(&self, batch: &mut Batch) {
+        profile_scope!("deferred steps");
         #[cfg(feature = "diagnostics")]
         use crate::copystat::{C, add};
         for step in &self.deferred().copies {
@@ -5982,6 +5991,7 @@ impl Host {
     /// as frame `frame` (saved if captures are on). `None` if nothing was
     /// shown; else, in diagnostics builds, whether the frame was black.
     pub(crate) fn present(&self, texture: &ID3D12Resource, state: u32, frame: u64) -> Option<bool> {
+        profile_scope!("present");
         // SAFETY: a live resource.
         let desc = unsafe { texture.GetDesc() };
         let Some(format) = swap_format(desc.Format) else {

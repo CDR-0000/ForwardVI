@@ -822,6 +822,7 @@ impl State {
     /// Brings the host list up to date for a draw; false if the draw cannot
     /// run on the host.
     fn prepare(&mut self, list: &HostList, indexed: bool) -> bool {
+        profile_scope!("draw prepare");
         self.prepare_for(list, indexed, false)
     }
 
@@ -1347,6 +1348,7 @@ impl State {
     /// copy. A list refreshes them where it first runs such a shader;
     /// title writes recorded later in the same list are not seen.
     fn heap_buffers(&self, list: &HostList) -> Option<u64> {
+        profile_scope!("heap buffers");
         let heap = self
             .heaps
             .iter()
@@ -1657,6 +1659,7 @@ impl State {
         heap: &crate::descriptor::Heap,
         host: &crate::descriptor::host::HostHeap,
     ) {
+        profile_scope!("heap textures");
         static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         if !*ON.get_or_init(|| std::env::var_os("VICTORY_HEAP_TEXTURES").is_none_or(|v| v != "0")) {
             return;

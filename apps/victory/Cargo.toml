@@ -22,6 +22,9 @@ clap.workspace = true
 walkdir.workspace = true
 
 [features]
+# Frame traces for Perfetto: build with --features profile (see
+# docs/profiling.md).
+profile = ["victory-core/profile", "victory-gpu/profile"]
 # Debug-level logs and the debugging switches (frame capture, stack dumps,
 # the host debug layer, scripted keys). Off in a plain release build.
 diagnostics = [

@@ -1880,6 +1880,7 @@ pub(crate) fn waits_by_list(lists: &[This]) -> Vec<Vec<ValueWait>> {
 }
 
 fn wait_for(this: This, address: u64, comparison: u32, reference: u64, wide: bool) {
+    profile_scope!("wait for memory value");
     let wait = ValueWait {
         address,
         comparison,

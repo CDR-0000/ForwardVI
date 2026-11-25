@@ -1888,6 +1888,7 @@ impl Shadow {
     /// union of a submission's ranges, each byte once, then calls
     /// [`Shadow::copy_back_done`].
     pub(crate) fn copy_back(&self, address: usize, len: usize) -> usize {
+        profile_scope!("compare and copy back");
         self.copy_back_with(address, len, None)
     }
 

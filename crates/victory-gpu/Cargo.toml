@@ -20,6 +20,8 @@ victory-shader.workspace = true
 tempfile.workspace = true
 
 [features]
+# Frame and step spans for the frame traces (see docs/profiling.md).
+profile = []
 # Debugging switches (frame capture, the host debug layer, per-draw data).
 diagnostics = []
 
