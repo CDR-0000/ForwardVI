@@ -77,6 +77,9 @@ pub(crate) struct Shadow {
     /// and the bytes from the buffer's first byte to `start` (the heap
     /// begins on a 64 KiB line; a title buffer need not).
     place: Option<(windows::Win32::Graphics::Direct3D12::ID3D12Heap, u64)>,
+    /// Placed with what shaders write declared to the flights (the title's
+    /// memory on the card, `crate::cardmem`).
+    told: bool,
     /// For the frame trace: what kind of memory this copies, plus one
     /// (0: not looked at yet; [`Shadow::kind`]).
     kind: AtomicU8,
@@ -2325,7 +2328,10 @@ impl Shadow {
     /// that binds, views or keeps a copy works on it unchanged; what
     /// copies does nothing ([`Shadow::update`], [`Shadow::gpu_writes`]).
     fn placed(placed: crate::inplace::Placed, start: u64, len: u64, window: bool) -> Shadow {
-        crate::host::name(&placed.buffer, || format!("title memory {start:#x}+{len:#x} in place"));
+        // (The card memory's buffer is shared: it keeps its own name.)
+        if !placed.told {
+            crate::host::name(&placed.buffer, || format!("title memory {start:#x}+{len:#x} in place"));
+        }
         let mut shadow = Shadow::new(placed.buffer, start as *mut u8, placed.gpu, start, len);
         // Not a copy: not counted with them, and nothing asks what the
         // title wrote there.
@@ -2333,6 +2339,7 @@ impl Shadow {
         LIVE[1].fetch_sub(len, Ordering::Relaxed);
         *shadow.watched.get_mut() = NOT_WATCHED;
         shadow.window = window;
+        shadow.told = placed.told;
         shadow.place = Some((placed.heap, placed.bias));
         shadow
     }
@@ -2370,6 +2377,7 @@ impl Shadow {
             card: None,
             window: false,
             place: None,
+            told: false,
             kind: AtomicU8::new(0),
         }
     }
@@ -2385,8 +2393,13 @@ impl Shadow {
             "window card", "window private", "window run", "window scattered", "window holes",
             "buffer in place", "window in place",
         ];
+        NAMES[self.kind_index() as usize]
+    }
+
+    /// [`Shadow::kind`]'s index: 4 and 9 are views with holes.
+    fn kind_index(&self) -> u8 {
         let known = self.kind.load(Ordering::Relaxed);
-        let k = if known != 0 {
+        if known != 0 {
             known - 1
         } else {
             let of = if self.place.is_some() {
@@ -2405,8 +2418,7 @@ impl Shadow {
             };
             self.kind.store(of + 1, Ordering::Relaxed);
             of
-        };
-        NAMES[k as usize]
+        }
     }
 
     /// `[address, address + len)` cut to the buffer, as offsets in the copy.
@@ -2431,7 +2443,10 @@ impl Shadow {
         // shortcut: another host copy of the same bytes (a title buffer
         // inside this one with a copy of its own, a texture in it) is not
         // told: the card's writes are not seen by write watching.
-        if self.place.is_some() {
+        // On the card the title's memory is placed, its writes declared all
+        // the same (flights and fills that read the bytes wait for them);
+        // nothing is taken of it ([`Shadow::writing`]).
+        if self.place.is_some() && !self.told {
             return;
         }
         let len = len.min(self.left(address));
@@ -2571,6 +2586,7 @@ impl Shadow {
             tracing::Level::INFO,
             "compare and copy back",
             kind = self.kind(),
+            mem = crate::memkind::of(address),
             kb = (len >> 10) as u64
         )
         .entered();
@@ -3031,6 +3047,7 @@ impl Shadow {
             tracing::Level::INFO,
             "copy refresh: one copy",
             kind = self.kind(),
+            mem = crate::memkind::of(address),
             kb = (len >> 10) as u64
         )
         .entered();
@@ -3197,9 +3214,35 @@ impl Shadow {
     fn copy(&self, from: usize, to: usize) -> usize {
         let (start, end) = (self.start as usize, (self.start + self.len) as usize);
         let (from, to) = (from.max(start), to.min(end));
-        // SAFETY: inside the mapping (`from` and `to` are within the buffer).
-        let at = unsafe { self.data.add(from - start) };
-        crate::host::copy_mapped(at, from as *const u8, to - from, false);
+        // Views with holes (as first seen): the parts the views show are
+        // read as they are, each gap by itself. Read whole, the kernel's
+        // copy failed at the first hole and all of it was read again around
+        // the holes, asking Windows where each region ends, which walks the
+        // page tables of a view to its end: 89 ms a frame for some 700
+        // such copies, ForwardVI's run of 25 November. A gap reads as
+        // before (zeros where nothing is mapped). `VICTORY_HOLES_WHOLE=1`:
+        // read whole, as before.
+        static WHOLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let holes = matches!(self.kind_index(), 4 | 9)
+            && !*WHOLE.get_or_init(|| std::env::var_os("VICTORY_HOLES_WHOLE").is_some_and(|v| v == "1"));
+        let read = |a: usize, b: usize| {
+            if a < b {
+                // SAFETY: inside the mapping (`a` and `b` are within the buffer).
+                let at = unsafe { self.data.add(a - start) };
+                crate::host::copy_mapped(at, a as *const u8, b - a, false);
+            }
+        };
+        if holes {
+            let mut at = from;
+            for (s, e) in crate::inplace::view_parts(from, to - from) {
+                read(at, s);
+                read(s, e);
+                at = e;
+            }
+            read(at, to);
+        } else {
+            read(from, to);
+        }
         // After the bytes are in: a snapshot taken meanwhile is not current.
         self.changed(from - start, to - start);
         self.card_changed(from - start, to - start);
@@ -3577,7 +3620,7 @@ fn lookup(address: u64, len: u64, any: bool) -> Option<Arc<Shadow>> {
         // memory. Not the big ones `cards` puts in the card's memory: those
         // are read too often to stay in the PC's.
         let big = cards() && size >= card_limits().0;
-        if !big && let Some(placed) = crate::inplace::place_for(key.0, len, false) {
+        if (!big || crate::cardmem::touches(key.0 as usize, len as usize)) && let Some(placed) = crate::inplace::place_for(key.0, len, false) {
             entry.shadow = Some(Arc::new(Shadow::placed(placed, key.0, len, false)));
             return entry.shadow.clone();
         }

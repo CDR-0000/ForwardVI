@@ -82,6 +82,117 @@ struct Retired(#[allow(dead_code)] Box<dyn std::any::Any>);
 // reference-counted wrappers holding them, dropped once.
 unsafe impl Send for Retired {}
 
+/// Maps 64 MB of a GPU upload heap (the card's memory, written by the
+/// processor through Resizable BAR) and says where the mapping landed
+/// (title GPU memory must lie between 4 GiB and 1 TiB: `xmem`'s address
+/// ranges) and how fast the processor writes and reads it. All of it is
+/// released again. For backing the title's GPU memory with the card's
+/// own, as the console's one memory. `fenced`: the free address space
+/// above 1 TiB is reserved first (and let go after the mapping), to see
+/// whether the mapping then lands below it (D3D12 takes no address).
+fn gpu_upload_probe(device: &ID3D12Device, fenced: bool) {
+    const BYTES: usize = 64 << 20;
+    const READ: usize = 4 << 20;
+    let heap = D3D12_HEAP_PROPERTIES { Type: D3D12_HEAP_TYPE_GPU_UPLOAD, ..Default::default() };
+    let desc = D3D12_RESOURCE_DESC {
+        Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
+        Width: BYTES as u64,
+        Height: 1,
+        DepthOrArraySize: 1,
+        MipLevels: 1,
+        SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+        Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
+        ..Default::default()
+    };
+    let fences = if fenced { fence_above_1_tib() } else { Vec::new() };
+    let fenced_tb = fences.iter().map(|f| f.1).sum::<usize>() as f64 / (1u64 << 40) as f64;
+    let mut buffer: Option<ID3D12Resource> = None;
+    // SAFETY: plain creation; the buffer is mapped, used and released here.
+    let made = unsafe { device.CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COMMON, None, &mut buffer) };
+    if let Err(e) = made {
+        tracing::warn!(error = %e, "GPU upload heap probe: 64 MB not made");
+        return;
+    }
+    let Some(buffer) = buffer else {
+        return;
+    };
+    let mut at: *mut std::ffi::c_void = std::ptr::null_mut();
+    // SAFETY: a buffer of an upload-capable heap, whole range.
+    if let Err(e) = unsafe { buffer.Map(0, None, Some(&mut at)) } {
+        tracing::warn!(error = %e, "GPU upload heap probe: not mapped");
+        return;
+    }
+    let address = at as usize;
+    unfence(&fences);
+    let started = std::time::Instant::now();
+    // SAFETY: the mapping holds `BYTES` bytes.
+    unsafe { std::ptr::write_bytes(at.cast::<u8>(), 0x5a, BYTES) };
+    let write = started.elapsed().as_secs_f64();
+    let mut back = vec![0u8; READ];
+    let started = std::time::Instant::now();
+    // SAFETY: as above; `back` holds `READ` bytes.
+    unsafe { std::ptr::copy_nonoverlapping(at.cast::<u8>().cast_const(), back.as_mut_ptr(), READ) };
+    let read = started.elapsed().as_secs_f64();
+    // SAFETY: mapped above.
+    unsafe { buffer.Unmap(0, None) };
+    tracing::info!(
+        fenced,
+        fences = fences.len(),
+        fenced_tb = format_args!("{fenced_tb:.1}"),
+        address = format_args!("{address:#x}"),
+        between_4_gib_and_1_tib = (1usize << 32..1usize << 40).contains(&address),
+        write_gb_per_s = format_args!("{:.2}", BYTES as f64 / 1e9 / write.max(1e-9)),
+        read_mb_per_s = format_args!("{:.0}", READ as f64 / 1e6 / read.max(1e-9)),
+        read_ok = back.iter().all(|&b| b == 0x5a),
+        "GPU upload heap probe: 64 MB of the card's memory mapped for the processor"
+    );
+}
+
+/// Reserves every free region of the address space from 1 TiB up (whole
+/// 64 KiB lines), for [`gpu_upload_probe`]: what a mapping made meanwhile
+/// cannot take. The reservations, `(base, bytes)`, are the caller's to let
+/// go. Reserving takes no memory.
+pub(crate) fn fence_above_1_tib() -> Vec<(usize, usize)> {
+    use windows_sys::Win32::System::Memory::{MEM_FREE, MEM_RESERVE, MEMORY_BASIC_INFORMATION, PAGE_NOACCESS, VirtualAlloc, VirtualQuery};
+    const LINE: usize = 64 << 10;
+    const TOP: usize = 0x7FFF_FFFF_0000;
+    let mut fences = Vec::new();
+    let mut at = 1usize << 40;
+    while at < TOP {
+        // SAFETY: plain data filled in by the query.
+        let mut info: MEMORY_BASIC_INFORMATION = unsafe { std::mem::zeroed() };
+        // SAFETY: a valid out pointer of the right size.
+        if unsafe { VirtualQuery(at as *const _, &mut info, size_of_val(&info)) } == 0 {
+            break;
+        }
+        let end = (info.BaseAddress as usize).saturating_add(info.RegionSize).min(TOP);
+        if info.State == MEM_FREE {
+            let base = at.next_multiple_of(LINE);
+            let bytes = end.saturating_sub(base) & !(LINE - 1);
+            if bytes > 0 {
+                // SAFETY: a reservation of free address space of our own.
+                let got = unsafe { VirtualAlloc(base as *const _, bytes, MEM_RESERVE, PAGE_NOACCESS) } as usize;
+                if got != 0 {
+                    fences.push((got, bytes));
+                }
+            }
+        }
+        if end <= at {
+            break;
+        }
+        at = end;
+    }
+    fences
+}
+
+/// Lets go of what [`fence_above_1_tib`] reserved.
+pub(crate) fn unfence(fences: &[(usize, usize)]) {
+    for (base, _) in fences {
+        // SAFETY: our own reservation of a moment ago.
+        unsafe { windows_sys::Win32::System::Memory::VirtualFree(*base as *mut _, 0, windows_sys::Win32::System::Memory::MEM_RELEASE) };
+    }
+}
+
 /// Milliseconds since the first call.
 pub(crate) fn now_ms() -> u64 {
     static EPOCH: OnceLock<std::time::Instant> = OnceLock::new();
@@ -185,6 +296,8 @@ fn sweep() {
     profile_scope!("resource sweep");
     // The in-place probe and census, if asked for (`VICTORY_INPLACE_PROBE`).
     crate::inplace::tick();
+    // Reads of the title's memory on the card (`VICTORY_CARD_MEMORY`).
+    crate::cardmem::say();
     static ON: OnceLock<bool> = OnceLock::new();
     if !*ON.get_or_init(|| std::env::var_os("VICTORY_SWEEP").is_none_or(|v| v != "0")) {
         return;
@@ -632,6 +745,23 @@ fn create() -> windows::core::Result<Host> {
         {
             tracing::info!(min = o1.WaveLaneCountMin, max = o1.WaveLaneCountMax, "host wave lanes");
             victory_shader::emit::set_host_max_wave(o1.WaveLaneCountMax);
+        }
+        // Whether the card's own memory can be written by the processor
+        // (GPU upload heaps: Resizable BAR on, and a runtime and driver that
+        // offer it): the nearest thing on a PC to the console's one memory.
+        let mut o16 = D3D12_FEATURE_DATA_D3D12_OPTIONS16::default();
+        let o16_ok = device
+            .CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS16, (&raw mut o16).cast(), size_of_val(&o16) as u32)
+            .is_ok();
+        tracing::info!(
+            asked = o16_ok,
+            supported = o16_ok && o16.GPUUploadHeapSupported.as_bool(),
+            "GPU upload heaps (memory on the card the processor writes directly)"
+        );
+        crate::cardmem::set_supported(o16_ok && o16.GPUUploadHeapSupported.as_bool());
+        if o16_ok && o16.GPUUploadHeapSupported.as_bool() {
+            gpu_upload_probe(&device, false);
+            gpu_upload_probe(&device, true);
         }
         let messages = debug
             .then(|| device.cast::<ID3D12InfoQueue>().ok())
@@ -1359,6 +1489,10 @@ struct Scratch {
     chunks: Vec<(Chunk, u64)>,
     current: usize,
     used: u64,
+    /// Fills of the scratch from the title's memory on the card, done by
+    /// the card ahead of the list ([`HostList::prelude`]): destination
+    /// chunk buffer and offset, card buffer and offset, bytes.
+    card_fills: Vec<(ID3D12Resource, u64, ID3D12Resource, u64, u64)>,
 }
 
 // SAFETY: the chunk pointers are persistent mappings of upload buffers.
@@ -1435,7 +1569,13 @@ fn take_chunk(host: &Host, size: u64) -> Option<Chunk> {
         ALIVE[5].fetch_add(1, Ordering::Relaxed);
         return Some(chunk);
     }
-    let (buffer, data) = host.upload_buffer(size)?;
+    // On the card when the title's memory is (`crate::cardmem`): the
+    // card copies into it what lies there.
+    let (buffer, data) = if crate::cardmem::scratch_on_card() {
+        host.gpu_upload_buffer(size)?
+    } else {
+        host.upload_buffer(size)?
+    };
     name(&buffer, || "list scratch".into());
     // SAFETY: a live buffer.
     let gpu = unsafe { buffer.GetGPUVirtualAddress() };
@@ -2517,7 +2657,13 @@ fn blocked_by(written: &[(usize, usize)], runs: &[&HostList], count: bool) -> Op
                         return Some(WHY_READ);
                     }
                 }
-                &Step::Fill(_, src, len) => {
+                &Step::Fill(dst, src, len) => {
+                    // From the title's memory on the card, copied by the
+                    // card ahead of the list: behind the flights on the
+                    // queue, so it finds what their shaders wrote.
+                    if list.fills_on_card(dst, src, len) {
+                        continue;
+                    }
                     if touches(written, src, src + len) {
                         // Not waited for, and checked when the flights land
                         // (`fill_ahead`).
@@ -2529,6 +2675,7 @@ fn blocked_by(written: &[(usize, usize)], runs: &[&HostList], count: bool) -> Op
                         }
                         if count {
                             LATE_STATS[16].fetch_add(1, Ordering::Relaxed);
+                            crate::cardmem::blocked_fill(src, len, dst, list.scratch_holds(dst, len));
                             #[cfg(feature = "diagnostics")]
                             fill_check::blocked(written, src, len);
                         }
@@ -6177,7 +6324,9 @@ impl HostList {
             (real != *first)
                 .then(|| transition(&copy.texture, host_state(real), host_state(*first)))
         }));
-        if barriers.is_empty() && syncs.is_empty() {
+        // Fills of scratch memory from the title's memory on the card.
+        let card_fills = std::mem::take(&mut self.scratch.lock().unwrap_or_else(|e| e.into_inner()).card_fills);
+        if barriers.is_empty() && syncs.is_empty() && card_fills.is_empty() {
             return None;
         }
         let Some((allocator, list)) = self
@@ -6192,6 +6341,10 @@ impl HostList {
         let recorded = unsafe {
             allocator.Reset().and_then(|()| {
                 list.Reset(allocator, None)?;
+                // (Buffers in the common state, as the card copies' uploads.)
+                for (dst, dst_at, src, src_at, bytes) in &card_fills {
+                    list.CopyBufferRegion(dst, *dst_at, src, *src_at, *bytes);
+                }
                 if !to_copy.is_empty() {
                     list.ResourceBarrier(&to_copy);
                 }
@@ -6410,6 +6563,47 @@ impl HostList {
 
     /// The bytes of scratch chunks the list holds now (after a reset:
     /// none while lists share their chunks).
+    /// A fill of this list's scratch at `dst` from `len` bytes of the
+    /// title's memory on the card at `src`, left to the card ahead of the
+    /// list ([`HostList::prelude`]); false if the scratch is not on the
+    /// card or `dst` lies in no chunk of it (the caller copies it).
+    fn card_fill(&self, dst: usize, src: usize, len: usize) -> bool {
+        if !self.fills_on_card(dst, src, len) {
+            return false;
+        }
+        let Some((card, src_at)) = crate::cardmem::source(src, len) else {
+            return false;
+        };
+        let mut s = self.scratch.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(chunk) = s
+            .chunks
+            .iter()
+            .find(|(c, size)| dst >= c.data && dst + len <= c.data + *size as usize)
+            .map(|(c, _)| (c._buffer.clone(), (dst - c.data) as u64))
+        else {
+            return false;
+        };
+        s.card_fills.push((chunk.0, chunk.1, card, src_at, len as u64));
+        true
+    }
+
+    /// Whether a fill of this list's scratch at `dst` from `len` bytes at
+    /// `src` is done by the card ([`HostList::card_fill`]): the source lies
+    /// in the title's memory on the card whole and `dst` in a chunk of the
+    /// scratch, which is on the card too.
+    fn fills_on_card(&self, dst: usize, src: usize, len: usize) -> bool {
+        if !crate::cardmem::scratch_on_card() || !crate::cardmem::touches(src, len) || crate::cardmem::source(src, len).is_none() {
+            return false;
+        }
+        self.scratch_holds(dst, len)
+    }
+
+    /// Whether `[dst, dst + len)` lies in a chunk of this list's scratch.
+    fn scratch_holds(&self, dst: usize, len: usize) -> bool {
+        let s = self.scratch.lock().unwrap_or_else(|e| e.into_inner());
+        s.chunks.iter().any(|(c, size)| dst >= c.data && dst + len <= c.data + *size as usize)
+    }
+
     pub(crate) fn scratch_kept(&self) -> u64 {
         let scratch = self.scratch.lock().unwrap_or_else(|e| e.into_inner());
         scratch.chunks.iter().map(|c| c.1).sum()
@@ -6668,7 +6862,11 @@ impl HostList {
                         add(C::CopyBytes, len as u64);
                         fill_check::runs(src, len);
                     }
-                    copy_mapped(dst as *mut u8, src as *const u8, len, false);
+                    // From the title's memory on the card: the card copies
+                    // it ahead of the list (the processor reads it at 42 MB/s).
+                    if !(crate::cardmem::touches(src, len) && self.card_fill(dst, src, len)) {
+                        copy_mapped(dst as *mut u8, src as *const u8, len, false);
+                    }
                     len
                 }
                 Step::Refresh(shadow, address, len) => {
@@ -6912,7 +7110,10 @@ impl Batch {
 /// reports an unmapped page instead of faulting. Asking `VirtualQuery` first
 /// cost about 2 ms per copy in the title's big pools (it walks the page
 /// tables to the region's end), which made copies run at 100-200 MB/s.
+#[track_caller]
 pub(crate) fn copy_mapped(dst: *mut u8, src: *const u8, len: usize, title_dst: bool) {
+    // Reads of the title's memory on the card are slow: counted by caller.
+    crate::cardmem::read(src as usize, len, std::panic::Location::caller());
     #[cfg(feature = "diagnostics")]
     match crate::copystat::mode() {
         1 => {
@@ -7023,7 +7224,9 @@ fn read_pieces(src: *const u8, dst: *mut u8, len: usize) {
 
 /// Reads title memory at `src` into `dst`; false if a page of it is not
 /// readable.
+#[track_caller]
 pub(crate) fn read_into(src: *const u8, dst: &mut [u8]) -> bool {
+    crate::cardmem::read(src as usize, dst.len(), std::panic::Location::caller());
     read(src, dst.as_mut_ptr(), dst.len())
 }
 
@@ -7154,6 +7357,42 @@ impl Host {
             Err(e) => {
                 tracing::warn!(error = %e, size, "no read-back buffer");
                 None
+            }
+        }
+    }
+
+    /// A mapped buffer of `size` bytes in the card's own memory, which the
+    /// processor writes through Resizable BAR and the card can copy into
+    /// (a GPU upload heap; `crate::cardmem`); in the common state.
+    pub(crate) fn gpu_upload_buffer(&self, size: u64) -> Option<(ID3D12Resource, *mut u8)> {
+        let heap = D3D12_HEAP_PROPERTIES { Type: D3D12_HEAP_TYPE_GPU_UPLOAD, ..Default::default() };
+        let desc = D3D12_RESOURCE_DESC {
+            Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
+            Width: size.max(1),
+            Height: 1,
+            DepthOrArraySize: 1,
+            MipLevels: 1,
+            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
+            ..Default::default()
+        };
+        let mut buffer: Option<ID3D12Resource> = None;
+        let mut data = std::ptr::null_mut();
+        // SAFETY: plain creation and mapping of a buffer of a heap the
+        // processor may map.
+        let made = unsafe {
+            self.device
+                .CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COMMON, None, &mut buffer)
+                .and_then(|()| match &buffer {
+                    Some(b) => b.Map(0, None, Some(&mut data)),
+                    None => Err(windows::core::Error::empty()),
+                })
+        };
+        match made {
+            Ok(()) => buffer.map(|b| (b, data.cast())),
+            Err(e) => {
+                tracing::warn!(size, error = %e, "a buffer on the card for the processor not made; upload memory instead");
+                self.upload_buffer(size)
             }
         }
     }

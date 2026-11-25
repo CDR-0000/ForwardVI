@@ -48,6 +48,31 @@ GPU does about 78 ms of it, so the processor work around each of the frame's
    processor: per profile run (`copy refresh: one copy` by kind), about 3,500
    refreshes a frame of small private buffers (~70 ms across threads, ~20 us
    each for 60 MB) and ~850 of windows with holes (~64 ms).
+   - 26 November: the title's own memory flags (a census in profile builds,
+     `VICTORY_PROFILE_MEMORY=1`): write-combined memory (one 2.2 GB
+     reservation, `0x2404`) took 80 ms a frame of refreshes, 3,450 small
+     buffers for 50 MB; the page pool's views (`0x801`) 68 ms. The small
+     write-combined buffers in place, as one heap each, one heap for the
+     whole reservation, or 64 MB pieces: typical submissions faster, but
+     some took 100-345 ms and the title itself was 70-85 ms a frame slower
+     (median frame 221-247 -> 326-368 ms). Not kept.
+6. **Next: the title's GPU memory on the card (Resizable BAR).** The console
+   has one memory; the nearest a PC comes is the card's own memory written by
+   the processor (D3D12 GPU upload heaps). Measured on this machine (26
+   November): supported; the processor writes it at 20.7 GB/s and reads it at
+   42 MB/s; a mapping lands at ~2.8 TB, above the 1 TiB the title's GPU memory
+   must stay below, but with the free address space above 1 TiB reserved for
+   the moment it lands at `0xff80000000`. Stages, each measured:
+   1. Back the title's write-combined reservations with GPU upload heaps
+      (behind a switch): the title writes the card directly; buffers in it are
+      placed there (no copy, no refresh, no copy-back; writes still declared
+      to the flights). Count every processor read of that memory by path.
+   2. Move what still reads it on the processor to the GPU (descriptor sync,
+      upload fills, texture detiling, checks), as the reads at 42 MB/s demand.
+   3. The page pool (textures, streaming): views of sections, so not
+      directly; GPU copies from its pages, or the pool itself on the card.
+   Vulkan has the placed mapping this needs built in
+   (`VK_EXT_map_memory_placed`); D3D12 only through the reservation trick.
 
 Then: a GPU trace in Nsight Graphics (`nsight.bat`, its own cache folder; see
 `docs/profiling.md`) once the processor side is near the GPU's time.

@@ -112,6 +112,9 @@ pub(crate) struct Placed {
     pub(crate) gpu: u64,
     /// Bytes from the buffer's first byte to the title memory's first.
     pub(crate) bias: u64,
+    /// What shaders write is declared to the flights (the title's memory
+    /// on the card, `crate::cardmem`).
+    pub(crate) told: bool,
 }
 
 /// Opens the 64 KiB pages that hold title memory `[start, start + len)`
@@ -128,13 +131,20 @@ pub(crate) fn place_part(device: &ID3D12Device, start: u64, len: u64) -> Result<
     let buffer = place(device, &heap, 0, bytes).map_err(Some)?;
     // SAFETY: a live buffer.
     let gpu = unsafe { buffer.GetGPUVirtualAddress() } + (start - at);
-    Ok(Placed { buffer, heap, gpu, bias: start - at })
+    Ok(Placed { buffer, heap, gpu, bias: start - at, told: false })
 }
 
 /// Title memory `[start, start + len)` in place, for a window outside
 /// buffers or a title buffer, if [`level`] asks for it and the memory can
 /// be opened; `None` leaves the caller to make a copy, as before.
 pub(crate) fn place_for(start: u64, len: u64, window: bool) -> Option<Placed> {
+    // The title's memory on the card: placed over it, always.
+    if let Some(placed) = crate::cardmem::place(start, len) {
+        let at = if window { 0 } else { 2 };
+        STATS[at].fetch_add(1, Ordering::Relaxed);
+        STATS[at + 1].fetch_add(len, Ordering::Relaxed);
+        return Some(placed);
+    }
     if level() < if window { 1 } else { 2 } {
         return None;
     }
@@ -437,6 +447,29 @@ fn cover_in(views: &BTreeMap<usize, (usize, usize, u64)>, at: usize, len: usize)
 /// [`Cover`] of `[at, at + len)` by the title's views as they are now.
 pub(crate) fn cover(at: usize, len: usize) -> Cover {
     cover_in(&views().views, at, len)
+}
+
+/// The parts of `[at, at + len)` the views show, in address order, as
+/// `(start, end)`, neighbours joined.
+pub(crate) fn view_parts(at: usize, len: usize) -> Vec<(usize, usize)> {
+    view_parts_in(&views().views, at, len)
+}
+
+fn view_parts_in(views: &BTreeMap<usize, (usize, usize, u64)>, at: usize, len: usize) -> Vec<(usize, usize)> {
+    let end = at.saturating_add(len);
+    let from = views.range(..=at).next_back().filter(|(base, view)| *base + view.0 > at).map_or(at, |(&base, _)| base);
+    let mut parts: Vec<(usize, usize)> = Vec::new();
+    for (&base, view) in views.range(from..end) {
+        let (s, e) = (base.max(at), (base + view.0).min(end));
+        if s >= e {
+            continue;
+        }
+        match parts.last_mut() {
+            Some(last) if last.1 == s => last.1 = e,
+            _ => parts.push((s, e)),
+        }
+    }
+    parts
 }
 
 /// Whether `[at, at + len)` is private memory, all committed and
@@ -1172,7 +1205,7 @@ fn section_part() -> Vec<String> {
 /// census (on a thread of its own: it asks Windows about every copy) 30
 /// and 150 seconds later.
 pub(crate) fn tick() {
-    if level() > 0 {
+    if level() > 0 || crate::cardmem::on() {
         say();
     }
     if probe_level() == 0 {
@@ -1243,6 +1276,7 @@ mod tests {
         assert_eq!(cover_in(&views, at + K64, 5 * K64), Cover::Run(9, 17 * K64 as u64));
         assert_eq!(cover_in(&views, at, 7 * K64), Cover::Scattered);
         assert_eq!(cover_in(&views, at + 6 * K64, 3 * K64), Cover::Holes);
+        assert_eq!(view_parts_in(&views, at + 6 * K64, 3 * K64), vec![(at + 6 * K64, at + 7 * K64), (at + 8 * K64, at + 9 * K64)], "the hole between left out");
         assert_eq!(cover_in(&views, at + 7 * K64, K64), Cover::None);
         assert_eq!(cover_in(&views, at - K64, 2 * K64), Cover::None);
     }
