@@ -371,6 +371,7 @@ pub(crate) fn pages_of(page: usize) -> Vec<usize> {
 /// len)` of `section`, as `(address, bytes)` ranges in address order: what
 /// the runtime wrote through a view of its own (`write_physical`,
 /// DirectStorage's page destinations) is no longer what their guards took.
+/// Not those of a page shown in very many views (`MANY_VIEWS`).
 pub(crate) fn views_of_section(section: usize, offset: u64, len: usize) -> Vec<(usize, usize)> {
     if len == 0 {
         return Vec::new();
@@ -380,7 +381,9 @@ pub(crate) fn views_of_section(section: usize, offset: u64, len: usize) -> Vec<(
     let mut pages: Vec<usize> = Vec::new();
     let mut at = offset - offset % K64 as u64;
     while at < end {
-        if let Some(shown) = v.pages.get(&(section, at)) {
+        if let Some(shown) = v.pages.get(&(section, at))
+            && shown.len() <= crate::watch::MANY_VIEWS
+        {
             pages.extend(shown.iter().copied());
         }
         match at.checked_add(K64 as u64) {

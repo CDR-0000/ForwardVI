@@ -79,7 +79,9 @@ fn build() -> &'static [u8; 32] {
         key.update(&limit.to_le_bytes());
         key.update(&[victory_shader::emit::group_sync()]);
         key.update(&victory_shader::emit::shader_opt().to_le_bytes());
-        for name in [
+        // Every `VICTORY_*` switch the translator's source names (listed by
+        // its build script), and these few by hand as before.
+        let mut names: std::collections::BTreeSet<&str> = [
             "VICTORY_WAVE_WIDE",
             "VICTORY_WAVE_DEEP_SKIPS",
             "VICTORY_WAVE_OWN_BITS",
@@ -87,7 +89,11 @@ fn build() -> &'static [u8; 32] {
             "VICTORY_WAVE_LOCAL",
             "VICTORY_MESH_OUTPUT_STRICT",
             "VICTORY_STRICT_JOINS",
-        ] {
+        ]
+        .into_iter()
+        .collect();
+        names.extend(victory_shader::SWITCHES.split(',').filter(|n| !n.is_empty()));
+        for name in names {
             match std::env::var_os(name) {
                 None => key.update(&[0]),
                 Some(value) => {
@@ -100,6 +106,18 @@ fn build() -> &'static [u8; 32] {
         }
         *key.finalize().as_bytes()
     })
+}
+
+/// The offline warm-up from a list of hashes (`victory translate --warm`):
+/// `container` is translated into the cache unless it is there already.
+/// `Ok(true)`: it was translated now. Needs [`use_shader_cache`] and
+/// [`prepare_host`].
+pub fn warm(container: &[u8]) -> Result<bool, String> {
+    match precompile_shader(container)? {
+        PrecompileOutcome::Translated => Ok(true),
+        PrecompileOutcome::Cached => Ok(false),
+        PrecompileOutcome::Refused | PrecompileOutcome::CachedRefusal => Err("does not translate".into()),
+    }
 }
 
 /// Uses an in-memory translation when the disk cache cannot be written.

@@ -26,6 +26,8 @@ pub use native::{
 
 /// Build-time identity of the translator and its compile inputs.
 pub const SOURCE_HASH: &str = env!("VICTORY_SHADER_SOURCE_HASH");
+/// Every `VICTORY_*` switch the translator's source names, comma-separated.
+pub const SWITCHES: &str = env!("VICTORY_SHADER_SWITCHES");
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum ShaderError {

@@ -135,7 +135,9 @@ pub(crate) struct Translated {
     /// A compute shader's thread-group size (`numthreads`) and whether it
     /// runs 64 lanes a wave; zero for other stages. For the timing run's
     /// notes: how much parallel work a dispatch gives the card.
+    #[cfg_attr(not(feature = "diagnostics"), allow(dead_code))]
     pub(crate) threads: [u32; 3],
+    #[cfg_attr(not(feature = "diagnostics"), allow(dead_code))]
     pub(crate) wave64: bool,
 }
 

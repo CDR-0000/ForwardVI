@@ -56,6 +56,30 @@ fn main() {
         "cargo:rustc-env=VICTORY_SHADER_SOURCE_HASH={}",
         hash.finalize().to_hex()
     );
+    println!("cargo:rustc-env=VICTORY_SHADER_SWITCHES={}", switches().join(","));
+}
+
+/// Every `"VICTORY_..."` string in the translator's source: the switches it
+/// reads, whose values join the shader cache key at run time.
+fn switches() -> Vec<String> {
+    let mut files = Vec::new();
+    sources(Path::new("src"), &mut files);
+    let mut found = std::collections::BTreeSet::new();
+    for path in files.iter().filter(|p| p.extension().is_some_and(|x| x == "rs")) {
+        let text = std::fs::read_to_string(path).unwrap_or_default();
+        let mut rest = &text[..];
+        while let Some(at) = rest.find("\"VICTORY_") {
+            let tail = &rest[at + 1..];
+            let end = tail
+                .find(|c: char| !(c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'))
+                .unwrap_or(tail.len());
+            if tail[end..].starts_with('"') {
+                found.insert(tail[..end].to_string());
+            }
+            rest = &tail[end..];
+        }
+    }
+    found.into_iter().collect()
 }
 
 fn field(hash: &mut blake3::Hasher, name: &str, value: &[u8]) {
