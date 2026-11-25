@@ -35,7 +35,7 @@ chosen for its stability. ztrx is in turn built on
 [**VIctory**](https://github.com/Marvisak/VIctory) (Marvisak). Almost all of the
 work in this tree is theirs.
 
-On top of ztrx so far:
+On top of ztrx so far, each with credit to its authors:
 
 - **Offline shader and pipeline precompilation**, from
   [fxceless/victory-fork#282](https://github.com/fxceless/victory-fork/pull/282)
@@ -43,9 +43,41 @@ On top of ztrx so far:
   GPU pipeline library before you play, so the game no longer compiles them while
   it runs. On an RTX 3080 Ti the first full precompile took about 8 minutes and
   built about 23,000 pipelines; loading into the world was much faster afterwards.
-- **victory-fork's newer work** up to `310c6eb`: the depth bounds test (the first
-  room lit by its lamp), fixes to how textures picked by index are uploaded (the
-  room's walls and the characters' textures), and the AMD view-heap clamp.
+- **victory-fork's newer work** up to `9376fd6` (fxceless): the depth bounds test
+  (the first room lit by its lamp), textures picked by index uploaded right (the
+  room's walls, the characters' skin and hair), the AMD view-heap clamp, a write
+  through one view of a page seen at its other views, and less processor work per
+  submission.
+- **The texture guard fix** (Carlos Sant'Anna, joroyt): memory the kernel writes
+  is held open until it has written, and writes through every view of a page are
+  seen. This ended the intro movie's stutter. Kept when victory-fork's own version
+  of the same code was merged.
+- **No blending on integer render targets**, from
+  [fxceless/victory-fork#51](https://github.com/fxceless/victory-fork/pull/51)
+  (a port of VIctory #806): D3D12 refuses a pipeline that blends into an integer
+  target, and the world's wall pipeline does; it is now built, as the console
+  draws it.
+- **Cheaper indirect draws**, from
+  [fxceless/victory-fork#220](https://github.com/fxceless/victory-fork/pull/220)
+  by Vyacheslav Venglovsky: no barrier after every indirect draw, the draw budget
+  charged once per thread group and kept in the card's memory. With windows
+  (`VICTORY_INDIRECT_WINDOW=1`) 3,200 draws went from 38.9 ms to 0.94 ms of GPU
+  time on an RTX 3080 Ti. Windows were checked in the world
+  (`VICTORY_INDIRECT_WINDOW_CHECK=1`): 0 stale records in 50,021 draws.
+- **ForwardVI's own work:**
+  - **Frame traces** (the `profile` feature, opened in Perfetto) that time every
+    step of every frame on every thread; see `docs/profiling.md`. Everything
+    below was found and checked with them.
+  - **More of the frame on all cores:** texture refreshes, copy refreshes,
+    snapshots and the compare of what shaders wrote run on worker threads
+    (`VICTORY_WIDE_TEXTURES`, `VICTORY_WIDE_REFRESH`, `VICTORY_WIDE_BACK`), and
+    texture reads no longer queue on the mapping lock
+    (`VICTORY_TEXTURE_NO_WAIT`).
+  - **Copy-back in few writes:** what shaders wrote goes back to the game's
+    memory in one write per stretch, not one system call per changed run (the
+    victory-fork merge had made that step 703 ms a frame; it is about 40).
+  - **A timing run** that names each slow GPU dispatch with its group count and
+    group size.
 - **Defaults that draw the correct image.** victory-fork turned on its fast
   modes by default (the relay, wide copy-back, card buffer copies from 1 MiB);
   they lost walls and models in the first room
@@ -55,9 +87,26 @@ On top of ztrx so far:
 
 ## Status (2026-11-25)
 
-Inherited from ztrx: boots through the intro and is playable through the opening
-mission, at 1-3 fps in the world. Anything in shadow is black and
-bright scenes overexpose (the game's ray-traced lighting does not run yet).
+Boots through the intro and is playable through the opening mission. Anything in
+shadow is still dark and bright scenes overexpose (the game's ray-traced lighting
+runs as plain compute work, without the card's ray-tracing hardware).
+
+**Frame time in the world**, RTX 3080 Ti and Ryzen 7 7800X3D, the median of the
+last 30 frames of a run stopped 10-20 seconds into the 3D scene:
+
+| Step | Median frame | Frames a second |
+|---|---:|---:|
+| Starting point (ztrx with the precompile and victory-fork `310c6eb`, default switches) | 903 ms | 1.1 |
+| + work on all cores, texture reads without the mapping lock | 581 ms | 1.7 |
+| + victory-fork's newer work and the copy-back in few writes | 540 ms | 1.9 |
+| + #51, #220 and indirect windows | **253 ms** | **4.0** |
+
+The GPU's share of a frame went from about 270 ms to 78 ms; most of what is left
+is processor work around each of the frame's 34 submissions, and the card and
+the processor still take turns. Making them overlap without losing what the
+image needs (the relay's problem) is the next step.
+
+We might show up on PortWatch VI soon at this rate.
 
 ## Requirements
 
@@ -95,11 +144,23 @@ and saves in folders you choose (`-Cache`, `-Data`). Controller: XInput pads (a
 DualShock/DualSense through DS4Windows works). With no pad connected the keyboard
 acts as one while the game window has focus.
 
-## Faster settings (not yet correct)
+## Recommended switches
 
-`VICTORY_RELAY=2`, or `VICTORY_LATE_WAIT=3 VICTORY_WIDE_BACK=1`, cut frame time
-by about 40%, but they currently lose walls and models. Making them draw the
-correct image is ForwardVI's first target.
+These draw the same image and make the frame much shorter; set them before `run`
+(the local `run.bat` does):
+
+| Switch | Effect |
+|---|---|
+| `VICTORY_RELAY=0` | the relay off (it loses walls and models) |
+| `VICTORY_WIDE_TEXTURES=1` | a submission's texture refreshes on the worker threads |
+| `VICTORY_WIDE_REFRESH=1` | host copy refreshes on the worker threads |
+| `VICTORY_WIDE_BACK=1` | the compare of what shaders wrote on the worker threads |
+| `VICTORY_TEXTURE_NO_WAIT=1` | texture reads do not wait for the mapping lock |
+| `VICTORY_INDIRECT_WINDOW=1` | indirect draws clamped 16-64 records a pass |
+
+Still being checked: the CPU/GPU overlap (`VICTORY_LATE_WAIT=1..3`, and the relay
+on top of it, `VICTORY_RELAY=2`). They cut frame time further but have lost walls
+and models before.
 
 ## Debugging switches
 
