@@ -70,9 +70,15 @@ pub(crate) struct Staging {
     /// ([`upload`]).
     waiting: std::sync::atomic::AtomicU64,
     /// The size of the buffer if it came from the pool of spare staging
-    /// buffers and goes back to it ([`staging_buffer`]); 0: a buffer of its
-    /// own, released when this is dropped.
+    /// buffers and goes back to it, or of its slab region ([`staging_buffer`]);
+    /// 0: a buffer of its own, released when this is dropped.
     pooled: u64,
+    /// Where the staging lies in `buffer` (`data` points there): 0 for a
+    /// buffer of its own, the offset of a slab's region ([`slab_region`])
+    /// otherwise. The footprints are from `data`.
+    base: u64,
+    /// The slab whose region it is, given back to it when this is dropped.
+    slab: Option<usize>,
 }
 
 /// A staging buffer nothing holds: the buffer and where it is mapped.
@@ -87,11 +93,117 @@ static SPARE: Mutex<(std::collections::BTreeMap<u64, Vec<Spare>>, u64)> =
     Mutex::new((std::collections::BTreeMap::new(), 0));
 /// The most bytes kept spare, and the largest buffer that is pooled.
 const SPARE_MOST: (u64, u64) = (256 << 20, 8 << 20);
-/// Staging buffers taken from the spare ones, and made, since the start.
-pub(crate) static SPARE_STATS: [std::sync::atomic::AtomicU64; 2] = [const { std::sync::atomic::AtomicU64::new(0) }; 2];
+/// Staging buffers taken from the spare ones, made, and carved from a
+/// slab, since the start.
+pub(crate) static SPARE_STATS: [std::sync::atomic::AtomicU64; 3] = [const { std::sync::atomic::AtomicU64::new(0) }; 3];
+
+/// The free ranges of a slab, by offset, none touching another, each with
+/// whether it may hold old bytes (it was handed out before).
+#[derive(Debug, Default, PartialEq)]
+struct Free(Vec<(u64, u64, bool)>);
+
+impl Free {
+    fn new(bytes: u64) -> Self {
+        Free(vec![(0, bytes, false)])
+    }
+
+    /// The first range of at least `size` bytes, cut from: its offset and
+    /// whether it may hold old bytes.
+    fn take(&mut self, size: u64) -> Option<(u64, bool)> {
+        let i = self.0.iter().position(|&(_, len, _)| len >= size)?;
+        let (at, len, dirty) = self.0[i];
+        if len == size {
+            self.0.remove(i);
+        } else {
+            self.0[i] = (at + size, len - size, dirty);
+        }
+        Some((at, dirty))
+    }
+
+    /// `size` bytes at `at`, handed out, are free again: joined with the
+    /// ranges they touch.
+    fn give(&mut self, at: u64, size: u64) {
+        let i = self.0.partition_point(|&(o, _, _)| o < at);
+        let mut range = (at, size, true);
+        if i < self.0.len() && at + size == self.0[i].0 {
+            range.1 += self.0[i].1;
+            self.0.remove(i);
+        }
+        if i > 0 && self.0[i - 1].0 + self.0[i - 1].1 == at {
+            self.0[i - 1].1 += range.1;
+            self.0[i - 1].2 = true;
+        } else {
+            self.0.insert(i, range);
+        }
+    }
+}
+
+/// Upload memory that staging regions are carved from: the buffer, where it
+/// is mapped, and its free ranges.
+struct Slab(ID3D12Resource, usize, Free);
+
+// SAFETY: a D3D12 buffer and its mapping; regions handed out are touched
+// only by the staging that holds them.
+unsafe impl Send for Slab {}
+
+static SLABS: Mutex<Vec<Slab>> = Mutex::new(Vec::new());
+/// The bytes of one slab.
+const SLAB_BYTES: u64 = 64 << 20;
+
+/// The most bytes of slabs (`VICTORY_STAGING_SLABS_MB`, 1024 by default; 0:
+/// no slabs, every staging buffer missing from the pool is made).
+fn slabs_most() -> u64 {
+    static MOST: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *MOST.get_or_init(|| {
+        std::env::var("VICTORY_STAGING_SLABS_MB")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(1024)
+            << 20
+    })
+}
+
+/// A region of `size` bytes (a multiple of 64 KiB, so aligned for texture
+/// data) from the first slab with room, or from a new one while the slabs
+/// stay within [`slabs_most`]: the slab's buffer, where the region is
+/// mapped, its offset, the slab, and whether it may hold old bytes.
+///
+/// Why: in a streaming burst the pool has nothing of the size asked (its
+/// buffers are in the lists in the air), and each miss made an upload
+/// buffer of its own: 3,500 in one frame of ForwardVI's run of 25 November,
+/// 223 ms of a 760 ms frame on the title's thread that records the frame.
+/// Regions were first carved once and kept by size: the slabs were all
+/// handed out in the first burst, and the bursts after made buffers again
+/// (978 ms of a 2.5 s frame). A region now goes back to its slab, joined
+/// with the free ranges beside it, and serves any size after.
+fn slab_region(host: &crate::host::Host, size: u64) -> Option<(ID3D12Resource, *mut u8, u64, usize, bool)> {
+    let most = slabs_most();
+    if size > SLAB_BYTES || most < SLAB_BYTES {
+        return None;
+    }
+    let mut slabs = SLABS.lock().unwrap_or_else(|e| e.into_inner());
+    for (i, slab) in slabs.iter_mut().enumerate() {
+        if let Some((at, dirty)) = slab.2.take(size) {
+            return Some((slab.0.clone(), (slab.1 + at as usize) as *mut u8, at, i, dirty));
+        }
+    }
+    if (slabs.len() as u64 + 1) * SLAB_BYTES > most {
+        return None;
+    }
+    let (buffer, data) = host.upload_buffer(SLAB_BYTES)?;
+    crate::host::name(&buffer, || format!("staging slab {}", slabs.len()));
+    if slabs.is_empty() {
+        tracing::info!(slab_mb = SLAB_BYTES >> 20, most_mb = most >> 20, "staging buffers are carved from slabs of upload memory");
+    }
+    let mut free = Free::new(SLAB_BYTES);
+    let (at, dirty) = free.take(size)?;
+    slabs.push(Slab(buffer.clone(), data as usize, free));
+    Some((buffer, data, at, slabs.len() - 1, dirty))
+}
 
 /// A mapped upload buffer of `total` bytes for a texture's staging, all
-/// zeros, and its pool size (0: not pooled).
+/// zeros: the buffer, where the staging is mapped, its pool or region size
+/// (0: neither), its offset in the buffer, and the slab whose region it is.
 ///
 /// Every texture the title streams in got a buffer of its own from the
 /// host and gave it back when its staging went: about a quarter of a
@@ -99,14 +211,25 @@ pub(crate) static SPARE_STATS: [std::sync::atomic::AtomicU64; 2] = [const { std:
 /// threads for some 100 uploads, most of it the graphics kernel waiting)
 /// and more to free on the thread that submits. A streaming burst is 200
 /// to 500 uploads in a frame (run 222), and those are the frames that
-/// dip. Buffers of up to 8 MiB are now kept by size and used again,
-/// zeroed as a new one is (levels not there yet must read as zeros).
+/// dip. Buffers of up to 8 MiB now come from a slab ([`slab_region`]),
+/// else from those kept by size, zeroed as a new one is (levels not there
+/// yet must read as zeros), and are made only past that.
 /// `VICTORY_STAGING_POOL=0`: made and freed each time, as before.
-fn staging_buffer(host: &crate::host::Host, total: u64) -> Option<(ID3D12Resource, *mut u8, u64)> {
+fn staging_buffer(host: &crate::host::Host, total: u64) -> Option<(ID3D12Resource, *mut u8, u64, u64, Option<usize>)> {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     let size = total.max(64 << 10).next_power_of_two();
     if size > SPARE_MOST.1 || !*ON.get_or_init(|| std::env::var_os("VICTORY_STAGING_POOL").is_none_or(|v| v != "0")) {
-        return host.upload_buffer(total).map(|(buffer, data)| (buffer, data, 0));
+        return host.upload_buffer(total).map(|(buffer, data)| (buffer, data, 0, 0, None));
+    }
+    let region = total.max(1).next_multiple_of(64 << 10);
+    if let Some((buffer, data, at, slab, dirty)) = slab_region(host, region) {
+        SPARE_STATS[2].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if dirty {
+            // SAFETY: the region's own mapping, `region` bytes, which
+            // nothing else holds.
+            unsafe { std::ptr::write_bytes(data, 0, total as usize) };
+        }
+        return Some((buffer, data, region, at, Some(slab)));
     }
     let spare = {
         let mut all = SPARE.lock().unwrap_or_else(|e| e.into_inner());
@@ -121,10 +244,10 @@ fn staging_buffer(host: &crate::host::Host, total: u64) -> Option<(ID3D12Resourc
         // SAFETY: the buffer's own mapping, `size` bytes, which nothing
         // else holds.
         unsafe { std::ptr::write_bytes(data as *mut u8, 0, total as usize) };
-        return Some((buffer, data as *mut u8, size));
+        return Some((buffer, data as *mut u8, size, 0, None));
     }
     SPARE_STATS[1].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    host.upload_buffer(size).map(|(buffer, data)| (buffer, data, size))
+    host.upload_buffer(size).map(|(buffer, data)| (buffer, data, size, 0, None))
 }
 
 /// What a texture's staging buffer holds: the hash of the memory detiled
@@ -480,11 +603,18 @@ impl Drop for Staging {
         STAGED[1].fetch_sub(self.bytes, Relaxed);
         // Nothing holds the staging any more (lists keep it until they are
         // reset, after their submission has run): its buffer is spare.
-        if self.pooled != 0 {
+        if let Some(slab) = self.slab {
+            if let Some(slab) = SLABS.lock().unwrap_or_else(|e| e.into_inner()).get_mut(slab) {
+                slab.2.give(self.base, self.pooled);
+            }
+        } else if self.pooled != 0 {
             let mut all = SPARE.lock().unwrap_or_else(|e| e.into_inner());
             if all.1 + self.pooled <= SPARE_MOST.0 {
                 all.1 += self.pooled;
-                all.0.entry(self.pooled).or_default().push(Spare(self.buffer.clone(), self.data as usize));
+                all.0
+                    .entry(self.pooled)
+                    .or_default()
+                    .push(Spare(self.buffer.clone(), self.data as usize));
             }
         }
     }
@@ -743,7 +873,7 @@ pub(crate) fn upload(list: &HostList, resource: This, texture: &ID3D12Resource) 
                         f.RowPitch
                     )
                 },
-                (gpu + footprint.Offset, len),
+                (gpu + staging.base + footprint.Offset, len),
             );
         }
         let to = D3D12_TEXTURE_COPY_LOCATION {
@@ -759,7 +889,11 @@ pub(crate) fn upload(list: &HostList, resource: This, texture: &ID3D12Resource) 
             pResource: unsafe { std::mem::transmute_copy(&staging.buffer) },
             Type: D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
             Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
-                PlacedFootprint: *footprint,
+                // The footprints are from the staging's own start.
+                PlacedFootprint: D3D12_PLACED_SUBRESOURCE_FOOTPRINT {
+                    Offset: staging.base + footprint.Offset,
+                    ..*footprint
+                },
             },
         };
         // SAFETY: an open list; both locations name live resources.
@@ -1519,16 +1653,19 @@ fn staging(resource: This, texture: &ID3D12Resource) -> Option<Arc<Staging>> {
             Some(&mut total),
         );
     }
-    let (buffer, data, pooled) = {
+    let (buffer, data, pooled, base, slab) = {
         profile_scope!("staging buffer: from the pool or made");
         staging_buffer(host, total)?
     };
-    crate::host::name(&buffer, || {
-        format!(
-            "staging of {resource:?} {}x{}x{} f{}",
-            d.Width, d.Height, d.DepthOrArraySize, d.Format.0
-        )
-    });
+    // (A slab is shared: it keeps its own name.)
+    if slab.is_none() {
+        crate::host::name(&buffer, || {
+            format!(
+                "staging of {resource:?} {}x{}x{} f{}",
+                d.Width, d.Height, d.DepthOrArraySize, d.Format.0
+            )
+        });
+    }
     tracing::debug!(?desc, total, "texture contents uploaded from title memory");
     STAGED[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     STAGED[1].fetch_add(total, std::sync::atomic::Ordering::Relaxed);
@@ -1552,6 +1689,8 @@ fn staging(resource: This, texture: &ID3D12Resource) -> Option<Arc<Staging>> {
         judged: [const { std::sync::atomic::AtomicU64::new(0) }; 2],
         waiting: std::sync::atomic::AtomicU64::new(0),
         pooled,
+        base,
+        slab,
     });
     map.insert(resource as usize, s.clone());
     Some(s)
@@ -1559,6 +1698,22 @@ fn staging(resource: This, texture: &ID3D12Resource) -> Option<Arc<Staging>> {
 
 #[cfg(test)]
 mod title_memory_tests {
+    #[test]
+    fn slab_ranges_given_back_join_and_serve_other_sizes() {
+        let mut free = super::Free::new(1024);
+        assert_eq!(free.take(256), Some((0, false)));
+        assert_eq!(free.take(256), Some((256, false)));
+        assert_eq!(free.take(256), Some((512, false)));
+        free.give(256, 256);
+        free.give(0, 256);
+        // Joined into one range at the start, beside the fresh rest.
+        assert_eq!(free.0, vec![(0, 512, true), (768, 256, false)]);
+        free.give(512, 256);
+        assert_eq!(free.0, vec![(0, 1024, true)]);
+        // A size never asked before fits the whole slab again.
+        assert_eq!(free.take(1024), Some((0, true)));
+        assert_eq!(free.take(1), None);
+    }
     use super::with_title;
 
     /// Title memory whose tail is reserved and not committed reads through

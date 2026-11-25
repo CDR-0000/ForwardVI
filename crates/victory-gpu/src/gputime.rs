@@ -198,13 +198,14 @@ pub(crate) fn frame(queue: &ID3D12CommandQueue, fence: &ID3D12Fence) {
     let (made, loaded) = crate::pipeline::library_counts();
     let _ = writeln!(
         s.out,
-        r#"{{"name":"counters","ph":"C","pid":1,"tid":{LANE},"ts":{now:.1},"args":{{"heap_textures":{},"upload_buffers":{},"pipelines_made":{},"pipelines_loaded":{},"staging_made":{},"staging_reused":{},"dropped":{}}}}},"#,
+        r#"{{"name":"counters","ph":"C","pid":1,"tid":{LANE},"ts":{now:.1},"args":{{"heap_textures":{},"upload_buffers":{},"pipelines_made":{},"pipelines_loaded":{},"staging_made":{},"staging_reused":{},"staging_carved":{},"dropped":{}}}}},"#,
         crate::draw::HEAP_TEXTURES.load(Relaxed),
         crate::host::MADE[0].load(Relaxed),
         made,
         loaded,
         crate::texture::SPARE_STATS[1].load(Relaxed),
         crate::texture::SPARE_STATS[0].load(Relaxed),
+        crate::texture::SPARE_STATS[2].load(Relaxed),
         crate::draw::dropped_count(),
     );
     let _ = s.out.flush();

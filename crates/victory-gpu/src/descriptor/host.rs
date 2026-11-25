@@ -1935,6 +1935,7 @@ impl HostHeap {
             let kept = if later {
                 None
             } else {
+                profile_scope!("descriptor: make view");
                 make(&view, self.cpu(index))
             };
             if kept.is_none() && !self.sampler {

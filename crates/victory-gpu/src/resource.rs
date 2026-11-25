@@ -2110,6 +2110,7 @@ fn host_texture_as(
         ..Default::default()
     };
     let mut texture: Option<ID3D12Resource> = None;
+    profile_scope!("host texture: create on the card");
     let made = if reserved {
         // The card's own layout of 64 KiB tiles, which a reserved texture
         // must have.
@@ -2126,12 +2127,27 @@ fn host_texture_as(
             )
         }
     } else {
+        // A texture the card never draws or writes into (no target, depth
+        // or unordered access) gets what it holds only from uploads and
+        // copies, which write all of it: its memory need not be zeroed
+        // first. Making them took 146 ms of an 884 ms
+        // streaming frame on the title's recording thread (ForwardVI's
+        // frame trace of 25 November, some 3,000 textures a burst).
+        // `VICTORY_TEXTURE_ZEROED=1`: zeroed, as before.
+        static ZEROED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let flags = if d.flags & (TARGET | DEPTH | UNORDERED) == 0
+            && !*ZEROED.get_or_init(|| std::env::var_os("VICTORY_TEXTURE_ZEROED").is_some_and(|v| v == "1"))
+        {
+            D3D12_HEAP_FLAG_CREATE_NOT_ZEROED
+        } else {
+            D3D12_HEAP_FLAG_NONE
+        };
         // SAFETY: the description has the host layout (checked size, same
         // fields); the out pointer is ours.
         unsafe {
             host.device.CreateCommittedResource(
                 &heap,
-                D3D12_HEAP_FLAG_NONE,
+                flags,
                 (&raw const d).cast(),
                 D3D12_RESOURCE_STATES(
                     crate::host::legal_for(d.flags, crate::host::texture_state(state)) as i32,
@@ -2624,6 +2640,7 @@ pub(crate) fn texture_at(address: u64, desc: &[u32; 14]) -> Option<This> {
         return None;
     }
     let mut out = std::ptr::null();
+    profile_scope!("placed texture: create at address");
     let made = create_at_address(
         std::ptr::null(),
         address,
