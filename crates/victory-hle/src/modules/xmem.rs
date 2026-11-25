@@ -543,11 +543,14 @@ fn runs(pages: &[usize], offset: usize, len: usize) -> Option<Vec<(Slice, usize)
 /// False if a page is unknown or the host fails.
 pub(crate) fn write_physical(pages: &[usize], offset: usize, data: &[u8]) -> bool {
     let Some(runs) = runs(pages, offset, data.len()) else {
+        // Which of the two it was: the caller's message names both.
+        tracing::warn!(pages = pages.len(), offset, len = data.len(), "physical pages not written: a page number is unknown (freed?), or there are too few");
         return false;
     };
     let (mut within, mut done) = (offset % PAGE, 0);
     for (slice, n) in &runs {
         let Some(mut view) = View::map(slice, *n) else {
+            tracing::warn!(pages = *n, error = %std::io::Error::last_os_error(), "physical pages not written: no view of them for the runtime");
             return false;
         };
         let k = (n * PAGE - within).min(data.len() - done);

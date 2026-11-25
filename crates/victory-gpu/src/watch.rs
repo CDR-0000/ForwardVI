@@ -20,7 +20,9 @@
 //! page destinations), and a write by the title through any view of a
 //! guarded page faults like one at the guarded address (the guard makes
 //! every view of the page read-only, [`open`] gives them all back). A
-//! system call writing into a guarded block fails (none is known to).
+//! system call writing into a guarded block fails, so memory the kernel is
+//! about to write is opened first and held open until it has written
+//! ([`writing`], [`KernelWrite`]): no check guards it in between.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
@@ -381,12 +383,17 @@ struct Guards {
     /// Blocks already copied as zeros. While they remain wholly uncommitted,
     /// the copy can skip hundreds of MB of failing kernel reads per world frame.
     absent: BTreeSet<usize>,
+    /// Title memory the kernel is writing now, `(start, end)` for each
+    /// [`KernelWrite`] alive: its blocks, and the other views of their
+    /// pages, are not made read-only until the write is over.
+    held: Vec<(usize, usize)>,
 }
 
 static GUARDS: Mutex<Guards> = Mutex::new(Guards {
     protected: BTreeSet::new(),
     clean: BTreeSet::new(),
     absent: BTreeSet::new(),
+    held: Vec::new(),
 });
 
 fn guards() -> std::sync::MutexGuard<'static, Guards> {
@@ -514,6 +521,9 @@ fn is_view(start: usize, end: usize) -> bool {
 /// at every other view of them are made read-only too: a write through
 /// one of those is this memory written, and only a fault can say so.
 fn protect(g: &mut Guards, from: usize, to: usize) {
+    if !g.held.is_empty() {
+        return protect_but_held(g, from, to);
+    }
     protect_here(g, from, to);
     for (base, bytes) in crate::inplace::views_between(from.saturating_mul(BLOCK), to.saturating_mul(BLOCK)) {
         let first = (base / BLOCK).max(from);
@@ -527,6 +537,40 @@ fn protect(g: &mut Guards, from: usize, to: usize) {
             }
         }
     }
+}
+
+/// [`protect`] while the kernel is writing title memory ([`KernelWrite`]):
+/// block by block, and not the blocks it writes, nor any other view of
+/// their pages. Those stay writable and are not noted clean, so every check
+/// reports them written until the write is over, and the first one after it
+/// takes what the kernel wrote and guards them.
+///
+/// A block made read-only under the kernel's hand fails its write (the
+/// kernel does not fault into our handler). That happened when a check on
+/// another thread came between the opening of a read's destination and the
+/// read: of a copy of the destination, or, since every view of a guarded
+/// page is read-only, of a copy that reads the same pages elsewhere. The
+/// title's DirectStorage requests then failed with
+/// `ERROR_INVALID_USER_BUFFER`, and the title, which does not look at their
+/// result, stopped on data that never arrived.
+fn protect_but_held(g: &mut Guards, from: usize, to: usize) {
+    for block in from..to {
+        let views = crate::inplace::pages_of(block * BLOCK);
+        if held(g, block * BLOCK) || views.iter().any(|&view| held(g, view)) {
+            continue;
+        }
+        protect_here(g, block, block + 1);
+        for view in views {
+            if view / BLOCK != block {
+                protect_alias(g, view / BLOCK);
+            }
+        }
+    }
+}
+
+/// Whether the kernel is writing the block at `at` ([`Guards::held`]).
+fn held(g: &Guards, at: usize) -> bool {
+    g.held.iter().any(|&(start, end)| at < end && at.saturating_add(BLOCK) > start)
 }
 
 /// Makes `block` read-only: another view of pages a copy has just taken
@@ -636,15 +680,49 @@ fn open_here(g: &mut Guards, start: usize, end: usize) -> bool {
     !blocks.is_empty()
 }
 
-/// Before our own write into title memory `[at, at + len)` through the
-/// kernel (which does not fault into our handler): opens its guarded blocks.
-/// The runtime calls it (as `kernel_will_write`) before the title's kernel
-/// reads into its own memory.
-pub fn writing(at: usize, len: usize) {
+/// Before a write into title memory `[at, at + len)` through the kernel
+/// (which does not fault into our handler, and fails where a block is
+/// read-only): opens its guarded blocks, and holds them open, with every
+/// other view of their pages, until what it returns is dropped
+/// ([`protect_but_held`]). Keep that until the kernel has written. The
+/// runtime calls it (as `kernel_will_write`) around the title's kernel
+/// reads into its own memory, and around the reads of its DirectStorage
+/// requests.
+pub fn writing(at: usize, len: usize) -> KernelWrite {
     // The length is the title's (`fread`'s size times count, saturated).
-    open(&mut guards(), at, at.saturating_add(len));
+    let (start, end) = (at, at.saturating_add(len));
+    {
+        let mut g = guards();
+        // Held before it is opened, under one lock: no check comes between.
+        g.held.push((start, end));
+        open(&mut g, start, end);
+    }
     // A placed texture there changes with no descriptor written.
     crate::descriptor::host::remapped(at, len);
+    KernelWrite { start, end }
+}
+
+/// Title memory the kernel is writing ([`writing`]): held open while this
+/// lives.
+#[must_use = "the memory is held open for the kernel only while this lives"]
+pub struct KernelWrite {
+    start: usize,
+    end: usize,
+}
+
+impl Drop for KernelWrite {
+    fn drop(&mut self) {
+        {
+            let mut g = guards();
+            if let Some(i) = g.held.iter().position(|&range| range == (self.start, self.end)) {
+                g.held.swap_remove(i);
+            }
+        }
+        // The blocks are open still, so the next check of each reports it
+        // written and takes the bytes that have arrived. A placed texture
+        // there was told changed before they had: again now.
+        crate::descriptor::host::remapped(self.start, self.end - self.start);
+    }
 }
 
 /// The runtime mapped a view of the physical bytes `[offset, offset + len)`
@@ -895,8 +973,9 @@ mod tests {
             !read(&mut file),
             "the kernel does not fault into our handler"
         );
-        writing(view + 100, 13);
+        let held = writing(view + 100, 13);
         assert!(read(&mut file));
+        drop(held);
         // SAFETY: the bytes just read.
         let landed = unsafe { std::slice::from_raw_parts((view + 100) as *const u8, 13) };
         assert_eq!(landed, b"from the disk");
@@ -904,6 +983,10 @@ mod tests {
             guard(view, view + 2 * BLOCK),
             Some((view / PAGE..view / PAGE + 1).collect())
         );
+        // The guards are told before the view goes: once it is unmapped
+        // another test may be given its address, and telling them then
+        // takes that test's guards and views away.
+        title_memory_remapped(view, 2 * BLOCK);
         // SAFETY: our view.
         unsafe {
             UnmapViewOfFile(
@@ -912,7 +995,6 @@ mod tests {
                 },
             )
         };
-        title_memory_remapped(view, 2 * BLOCK);
     }
 
     #[test]
@@ -1053,6 +1135,8 @@ mod tests {
         let mut local = [0u8; 16];
         let at = local.as_mut_ptr() as usize;
         assert!(!is_view(at, at + local.len()));
+        // (Before the memory goes, as above.)
+        title_memory_remapped(p, 3 * BLOCK);
         // SAFETY: our views and placeholder.
         unsafe {
             UnmapViewOfFile2(GetCurrentProcess(), first, MEM_PRESERVE_PLACEHOLDER);
@@ -1062,7 +1146,6 @@ mod tests {
             }
             windows_sys::Win32::Foundation::CloseHandle(section);
         }
-        title_memory_remapped(p, 3 * BLOCK);
     }
 
     /// Blocks of a placeholder between views are reported once, then not
@@ -1137,6 +1220,8 @@ mod tests {
         title_memory_remapped(p + BLOCK, BLOCK);
         assert_eq!(guard(p, p + 3 * BLOCK), Some(pages(1).collect()));
         assert_eq!(guard(p, p + 3 * BLOCK), Some(Vec::new()));
+        // (Before the memory goes, as above.)
+        title_memory_remapped(p, 3 * BLOCK);
         // SAFETY: our views and placeholder.
         unsafe {
             UnmapViewOfFile2(GetCurrentProcess(), first, MEM_PRESERVE_PLACEHOLDER);
@@ -1146,7 +1231,6 @@ mod tests {
             }
             windows_sys::Win32::Foundation::CloseHandle(section);
         }
-        title_memory_remapped(p, 3 * BLOCK);
     }
 
     /// A pagefile section mapped twice: two views of the same physical
@@ -1282,13 +1366,127 @@ mod tests {
         drop_views(section, &[guarded, _unused], SIZE);
     }
 
+    /// A file of `bytes` bytes, each its place in the file modulo 251.
+    fn file_of(bytes: usize) -> std::fs::File {
+        use std::io::Write;
+        let mut file = tempfile::tempfile().unwrap();
+        let data: Vec<u8> = (0..bytes).map(|i| (i % 251) as u8).collect();
+        file.write_all(&data).unwrap();
+        file
+    }
+
+    /// Reads the start of `file` into `[at, at + len)` through the kernel
+    /// (`ReadFile` straight into that memory, as the title's reads and its
+    /// DirectStorage requests do).
+    fn kernel_read(file: &mut std::fs::File, at: usize, len: usize) -> std::io::Result<()> {
+        use std::io::{Read, Seek};
+        file.rewind()?;
+        // SAFETY: memory of a test's own view, nothing else refers to it.
+        file.read_exact(unsafe { std::slice::from_raw_parts_mut(at as *mut u8, len) })
+    }
+
+    /// The kernel reads into a pool view of pages that a copy reads through
+    /// another view, and that copy is checked between the opening of the
+    /// destination and the read. Opened only, the destination is read-only
+    /// again by then (as the other view of a guarded page) and the read
+    /// fails. Held open, it stays writable: the check reports the pages
+    /// written, the read lands, and the check after it takes the bytes.
+    #[test]
+    fn a_check_during_a_kernel_read_does_not_fail_it() {
+        const SIZE: usize = 2 * BLOCK;
+        let (section, checked, pool) = two_views(SIZE);
+        let pages = |block: usize| (checked + block * BLOCK) / PAGE;
+        let mut file = file_of(13);
+        assert_eq!(guard(checked, checked + SIZE), Some(vec![pages(0), pages(1)]));
+        assert_eq!(guard(checked, checked + SIZE), Some(Vec::new()));
+        // Opened and let go at once, as before: the check guards it again.
+        drop(writing(pool + 100, 13));
+        assert_eq!(guard(checked, checked + SIZE), Some(vec![pages(0)]));
+        let error = kernel_read(&mut file, pool + 100, 13).expect_err("a read into a guarded block fails");
+        eprintln!("the kernel read into a block guarded again: {error}");
+        // Held: checks come and go, the destination stays open.
+        let held = writing(pool + 100, 13);
+        assert_eq!(guard(checked, checked + SIZE), Some(vec![pages(0)]), "written, for all the check knows");
+        assert_eq!(guard(checked, checked + SIZE), Some(vec![pages(0)]), "and so at every check while it lasts");
+        kernel_read(&mut file, pool + 100, 13).expect("the destination is held open");
+        // SAFETY: the same bytes through the checked view.
+        let landed = unsafe { std::slice::from_raw_parts((checked + 100) as *const u8, 13) };
+        assert_eq!(landed, &(0..13).collect::<Vec<u8>>()[..]);
+        drop(held);
+        assert_eq!(guard(checked, checked + SIZE), Some(vec![pages(0)]), "the check after the read takes its bytes");
+        assert_eq!(guard(checked, checked + SIZE), Some(Vec::new()), "and guards the pages again");
+        assert!(kernel_read(&mut file, pool + 100, 13).is_err(), "at both views");
+        drop_views(section, &[checked, pool], SIZE);
+    }
+
+    /// A destination with one view, checked itself (a title buffer the
+    /// kernel reads into), and a write held twice over the same memory: it
+    /// stays open until the last is over.
+    #[test]
+    fn memory_held_twice_stays_open_until_both_writes_are_over() {
+        let (section, view, _other) = two_views(BLOCK);
+        let mut file = file_of(64);
+        assert_eq!(guard(view, view + BLOCK), Some(vec![view / PAGE]));
+        let first = writing(view, 64);
+        let second = writing(view + 32, 64);
+        drop(first);
+        assert_eq!(guard(view, view + BLOCK), Some(vec![view / PAGE]));
+        kernel_read(&mut file, view + 32, 64).expect("still held by the second");
+        drop(second);
+        assert_eq!(guard(view, view + BLOCK), Some(vec![view / PAGE]));
+        assert_eq!(guard(view, view + BLOCK), Some(Vec::new()));
+        assert!(guards().held.iter().all(|&(start, end)| end <= view || start >= view + BLOCK));
+        drop_views(section, &[view, _other], BLOCK);
+    }
+
+    /// The same on two threads, as in the title: one keeps checking the
+    /// copy's view while the other reads a megabyte at a time through the
+    /// kernel into the pool view of the same pages. No read fails, and the
+    /// check after the last one takes what it wrote.
+    #[test]
+    fn kernel_reads_are_not_failed_by_checks_on_another_thread() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        const SIZE: usize = 16 * BLOCK;
+        let (section, checked, pool) = two_views(SIZE);
+        let mut file = file_of(SIZE);
+        let done = AtomicBool::new(false);
+        let mut checks = 0u32;
+        std::thread::scope(|threads| {
+            let checking = threads.spawn(|| {
+                let mut checks = 0u32;
+                while !done.load(Ordering::Relaxed) {
+                    guard(checked, checked + SIZE).expect("a view");
+                    checks += 1;
+                }
+                checks
+            });
+            for read in 0..200 {
+                let held = writing(pool, SIZE);
+                let result = kernel_read(&mut file, pool, SIZE);
+                drop(held);
+                if let Err(error) = result {
+                    done.store(true, Ordering::Relaxed);
+                    panic!("read {read} failed under the checks: {error}");
+                }
+            }
+            done.store(true, Ordering::Relaxed);
+            checks = checking.join().unwrap();
+        });
+        assert!(checks > 0);
+        assert!(guard(checked, checked + SIZE).is_some());
+        // SAFETY: the pages through the checked view.
+        let bytes = unsafe { std::slice::from_raw_parts(checked as *const u8, SIZE) };
+        assert!(bytes.iter().enumerate().all(|(i, &b)| b == (i % 251) as u8));
+        drop_views(section, &[checked, pool], SIZE);
+    }
+
     /// A write or mapping that runs past the end of the address space (a
     /// title's `fread` with a huge count) covers up to the end; the sum used
     /// to overflow. Up there no test has guarded blocks.
     #[test]
     fn ranges_past_the_address_space_end_do_not_overflow() {
         let top = usize::MAX - 16;
-        writing(top, PAGE);
+        drop(writing(top, PAGE));
         title_memory_remapped(top, usize::MAX);
     }
 }

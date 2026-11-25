@@ -519,7 +519,10 @@ pub extern "C" fn _wfsopen(path: *const u16, mode: *const u16, share: i32) -> Fi
 // fail there instead of faulting into its handler; the title's
 // synchronous reads (title+0x313fc0) read straight into 4 KiB-aligned
 // destinations and retry a failed `ReadFile` forever. So the destination
-// is opened first.
+// is opened first, and held open until the read has returned: a check on
+// another thread guards nothing of it in between.
+// shortcut: a read that returns pending (overlapped) is let go when the
+// call returns, before the kernel has written; one warning says so.
 
 pub extern "system" fn ReadFile(
     file: *mut c_void,
@@ -528,15 +531,30 @@ pub extern "system" fn ReadFile(
     read: *mut u32,
     overlapped: *mut c_void,
 ) -> i32 {
-    victory_gpu::kernel_will_write(buffer as usize, len as usize);
-    host!("kernel32.dll", "ReadFile": extern "system" fn(*mut c_void, *mut u8, u32, *mut u32, *mut c_void) -> i32)(
+    use windows_sys::Win32::Foundation::{ERROR_IO_PENDING, GetLastError, SetLastError};
+    let open = victory_gpu::kernel_will_write(buffer as usize, len as usize);
+    let done = host!("kernel32.dll", "ReadFile": extern "system" fn(*mut c_void, *mut u8, u32, *mut u32, *mut c_void) -> i32)(
         file, buffer, len, read, overlapped,
-    )
+    );
+    // The title asks for the read's error next: letting the memory go (and
+    // the warning) must not change it.
+    // SAFETY: the calling thread's own last error.
+    let error = unsafe { GetLastError() };
+    drop(open);
+    if done == 0 && error == ERROR_IO_PENDING {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            tracing::warn!(len, "a read into title memory is pending when ReadFile returns: its destination is not held open for it");
+        });
+    }
+    // SAFETY: as above.
+    unsafe { SetLastError(error) };
+    done
 }
 
 /// The host CRT reads large requests straight into the caller's buffer.
 pub extern "C" fn fread(buffer: *mut u8, size: usize, count: usize, stream: File) -> usize {
-    victory_gpu::kernel_will_write(buffer as usize, size.saturating_mul(count));
+    let _open = victory_gpu::kernel_will_write(buffer as usize, size.saturating_mul(count));
     host!("ucrtbase.dll", "fread": extern "C" fn(*mut u8, usize, usize, File) -> usize)(
         buffer, size, count, stream,
     )
