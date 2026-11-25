@@ -93,9 +93,8 @@ On top of ztrx so far, each with credit to its authors:
 ## Status (2026-11-26)
 
 Boots through the intro and is playable through the opening mission, now at
-about 6 frames a second while the world loads in (a median of about 165 ms a
-frame, from about 260 ms on 25 November) and 9-23 frames a second in calmer
-stretches later on. Anything in shadow is still dark and bright scenes
+about 6 frames a second in the world (a median of about 160-165 ms a frame, from
+about 260 ms on 25 November), both while it loads in and in steady play. Anything in shadow is still dark and bright scenes
 overexpose (the game's ray-traced lighting runs as plain compute work, without
 the card's ray-tracing hardware).
 
@@ -150,9 +149,10 @@ heavy frames the table above leaves out:
 | + the game's GPU memory on the card (Resizable BAR) | 205 ms | 4.9 | 556 ms |
 | + constants it holds copied card to card on the GPU | **163-168 ms** | **6.0** | **262-293 ms** |
 
-Later in play, past the loading bursts, the sampling runs (`sample.bat`, 20
-seconds starting about a minute after the first frame) measured 43-115 ms a
-frame on average, 9-23 frames a second, depending on the scene.
+In two minutes of steady play after that (a 165-second profile run), the median
+stayed at 145-200 ms a frame, 161 ms over its last 600 frames. Stretches that
+run at a flat 33 ms (30 frames a second) are cutscenes and loading screens, not
+play.
 
 26 November:
 
