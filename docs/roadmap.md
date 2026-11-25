@@ -11,17 +11,19 @@ README's table). With the CPU and GPU overlapping (`VICTORY_LATE_WAIT=3`) the
 GPU does about 78 ms of it, so the processor work around each of the frame's
 ~33 submissions sets the frame time.
 
-1. **The relay or late wait.** `VICTORY_RELAY=2` felt faster in one run, but its
-   frames could not be compared with late wait's (a heavier scene). Settle it
-   with both run in the same spot for a minute (`overlap.bat late3`,
-   `overlap.bat relay2`), and check the first room's walls with the relay.
-2. **Waits for upload fills.** With late wait, a fill of upload memory that
-   reads title memory a submission in the air may write settles everything in
-   the air (about one a frame; twelve with 256 lists, which is why 128 stays).
-   The relay waits only for the submissions that declared that memory.
-3. **Per-submission processor work**, largest first: snapshots (~28 ms a
-   frame), refreshes of host copies (~21), deferred steps (~18), copy-back
-   (~15), the compare of what shaders wrote (~12).
+1. **Done: the relay or late wait.** Late wait stage 3 with card buffers from
+   1 MiB is the setting (`run.bat`); the relay, alone or with the card buffers,
+   was not faster and lost walls before. An Nsight trace of a heavy frame: the
+   GPU works about 159 of 314 ms, shader cores idle 78%, no costly shader.
+2. **The settle at 128 lists in the air** (about 67 ms of waiting a frame in
+   heavy scenes): it waits for everything in the air and the GPU then stands
+   idle while the processor prepares. Settling only the oldest flights needs
+   per-flight snapshots (as the relay keeps); more lists made the waits for
+   upload fills worse (256: twelve a frame).
+3. **Per-submission processor work**, largest first: refreshes of host copies
+   (~43 ms a frame on the presenting thread, ~35 on each worker), deferred
+   steps (~33), upload fills (~10), copy-back (~13). (Snapshots and the
+   compare went to the GPU with the card buffers.)
 4. **Spikes.** Frames of 700-1,400 ms while things stream in; and the title
    draws a few garbage indirect records (all ones, 16,777,216 vertices) that
    the budget cuts off only after several.
