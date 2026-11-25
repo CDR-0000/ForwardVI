@@ -61,6 +61,8 @@ const PAGES_64K: u32 = PAGES_2M | PAGES_64K_BIT;
 /// adds GPU access bits (0x800-0x40000). Write-combining and uncached are
 /// dropped too: our GPU side reads this memory through the CPU.
 const HOST_PROTECTION: u32 = 0x1ff;
+/// The write-combining bit of the title's protection.
+const PAGE_WRITECOMBINE_ASKED: u32 = 0x400;
 /// XMem flags of memory both processors reach: all of ours.
 const GRAPHICS: u64 = 3;
 /// XMem flag bit of 32-bit graphics memory.
@@ -119,6 +121,23 @@ pub extern "system" fn XMemVirtualAlloc(
         }
         protect = PAGE_NOACCESS;
     }
+    // The title's memory on the card (`VICTORY_CARD_MEMORY=1`): a
+    // reservation asked for write-combined is the card's memory, committed
+    // whole; later commits of its pages have nothing to do.
+    #[cfg(windows)]
+    {
+        if !base.is_null() && victory_gpu::title_card_memory_holds(base as usize) {
+            return base;
+        }
+        if base.is_null()
+            && !placeholder
+            && asked & PAGE_WRITECOMBINE_ASKED != 0
+            && let Some(at) = victory_gpu::title_card_memory(size, lowest, highest)
+        {
+            victory_gpu::title_memory_kind(at, size, "virtual", u64::from(asked));
+            return at as *mut c_void;
+        }
+    }
     let mut kind = kind & !(PAGES_2M | PAGES_64K_BIT);
     if placeholder {
         kind |= MEM_RESERVE | MEM_RESERVE_PLACEHOLDER;
@@ -167,6 +186,9 @@ pub extern "system" fn XMemVirtualAlloc(
                 "XMemVirtualAlloc refused"
             );
         }
+    } else {
+        // As asked, console bits and all (the frame trace's census).
+        victory_gpu::title_memory_kind(at as usize, size, "virtual", u64::from(asked));
     }
     if base.is_null() {
         tracing::debug!(
@@ -300,18 +322,22 @@ fn hooks() -> [usize; 2] {
 /// The title's general allocator, for middleware too: its hook if it has
 /// one, else [`XMemAllocDefault`].
 pub extern "system" fn XMemAlloc(size: usize, attributes: u64) -> *mut c_void {
-    match hooks()[0] {
+    let at = match hooks()[0] {
         0 => XMemAllocDefault(size, attributes),
         hook => {
             // SAFETY: the title's own routine of this type.
             let alloc: AllocRoutine = unsafe { std::mem::transmute(hook) };
             alloc(size, attributes)
         }
-    }
+    };
+    // The memory type (bits 29-32) as asked, for the frame trace's census.
+    victory_gpu::title_memory_kind(at as usize, size, "alloc", attributes >> 29 & 0xf);
+    at
 }
 
 /// See [`XMemAlloc`].
 pub extern "system" fn XMemFree(address: *mut c_void, attributes: u64) {
+    victory_gpu::title_memory_kind_gone(address as usize);
     match hooks()[1] {
         0 => XMemFreeDefault(address, attributes),
         hook => {
