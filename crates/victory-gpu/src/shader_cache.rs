@@ -127,6 +127,9 @@ pub(crate) fn host_shader(container: &[u8]) -> Result<HostShader, String> {
 }
 
 fn target() -> [u32; 2] {
+    // The view heap's null slot is part of the key: probe it before reading
+    // it, so a title run and the offline precompile compute the same key.
+    crate::descriptor::host::probe_view_limit();
     [
         victory_shader::emit::host_max_wave(),
         victory_shader::emit::view_heap_limit(),
