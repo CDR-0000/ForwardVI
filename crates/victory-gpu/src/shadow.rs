@@ -490,6 +490,7 @@ static PREPARED: AtomicU64 = AtomicU64::new(0);
 /// A submission's preparing begins (`crate::host`, under the submission
 /// lock).
 pub(crate) fn preparing(number: u64) {
+    profile_scope!("preparing");
     PREPARED.store(number, Ordering::Relaxed);
 }
 
@@ -1078,6 +1079,7 @@ static SNAPS: Mutex<Vec<(usize, usize, usize)>> = Mutex::new(Vec::new());
 /// its lists go to the card: takes the snapshots [`Shadow::writing`] noted.
 /// Nothing to do without the switch.
 pub(crate) fn take_snapshots() {
+    profile_scope!("take snapshots");
     let snaps = std::mem::take(&mut *SNAPS.lock().unwrap_or_else(|e| e.into_inner()));
     if snaps.is_empty() {
         return;
@@ -1095,6 +1097,7 @@ fn copy_jobs(copies: Vec<(usize, usize, usize)>) -> Vec<Job> {
         let group = std::mem::take(group);
         if !group.is_empty() {
             jobs.push(Box::new(move || {
+                profile_scope!("snapshot copy");
                 for (src, dst, len) in group {
                     // SAFETY: the caller's ranges: a host copy's mapping and
                     // its snapshot, which do not overlap.
@@ -1163,6 +1166,7 @@ fn find_pieces(scans: Vec<(usize, usize, usize, usize, usize)>) -> Vec<Vec<(usiz
         }
         let found = found.clone();
         jobs.push(Box::new(move || {
+            profile_scope!("compare: find written pieces");
             let mut mine: Found = Vec::with_capacity(group.len());
             for (data, before, start, from, to, which, place) in group {
                 let mut pieces = Vec::new();
@@ -2372,6 +2376,7 @@ impl Shadow {
     /// since it was last copied (all of it if the memory is not
     /// write-watched). Returns the bytes copied.
     pub(crate) fn update(&self, address: usize, len: usize) -> usize {
+        profile_scope!("copy refresh: one copy");
         // In place: the card reads title memory itself.
         if self.place.is_some() {
             return 0;
