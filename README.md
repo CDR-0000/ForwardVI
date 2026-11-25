@@ -78,6 +78,11 @@ On top of ztrx so far, each with credit to its authors:
     victory-fork merge had made that step 703 ms a frame; it is about 40).
   - **A timing run** that names each slow GPU dispatch with its group count and
     group size.
+- **Two shader fixes from [DexNom/VIctory](https://github.com/DexNom/VIctory)**
+  (DexNom): 40 shader variants restored with blending kept off integer render
+  targets, and a voxel visibility compute shader that translates again (a wave64
+  mask restored from scalar copies). Checked on an RTX 3080 Ti after a full
+  precompile: same frame time, one shader that no longer drops its work.
 - **Defaults that draw the correct image.** victory-fork turned on its fast
   modes by default (the relay, wide copy-back, card buffer copies from 1 MiB);
   they lost walls and models in the first room
@@ -85,7 +90,7 @@ On top of ztrx so far, each with credit to its authors:
   ForwardVI leaves them off until they draw the same image; each still turns on
   with its switch for measuring.
 
-## Status (2026-11-25)
+## Status (2026-11-26)
 
 Boots through the intro and is playable through the opening mission. Anything in
 shadow is still dark and bright scenes overexpose (the game's ray-traced lighting
@@ -130,10 +135,34 @@ threads, about 130 world frames a run):
 - Normal frames sit at about 255 ms with the GPU busy only about 80 ms of it:
   most of the rest is keeping copies of game memory in sync with the GPU.
 
-The next step is a leaner design rather than more patching: the GPU reading
-game memory directly (no copies to refresh or copy back, and much less RAM),
-with textures converted on the GPU. It is built beside the current path behind
-a switch and measured before anything is removed.
+26 November:
+
+- Up to 256 command lists in flight before the processor waits for the GPU
+  (128 before): the wait for everything in flight, once a frame, is gone. Median
+  world frame 262 to 221 ms.
+- **The game's GPU memory on the card, through Resizable BAR**
+  (`VICTORY_CARD_MEMORY=1`). The console has one memory for both processors; the
+  nearest a PC comes is the card's own memory written by the processor directly
+  (D3D12 GPU upload heaps). The game's 2.2 GB of write-combined memory (the
+  memory it writes for the GPU to read) is now made of card memory: the game's
+  writes land on the card, and its 3,500 small buffers a frame are no longer
+  tracked, copied or copied back. Constants the GPU needs realigned are copied
+  card to card on the GPU. Median world frame 221 to about 165 ms, the 90th
+  percentile from about 500 to about 280 ms, the worst stalls from about 3 s to
+  under 1 s, GPU time per frame 77 to 52 ms; same image. Needs Resizable BAR
+  (and "Above 4G decoding") on in the BIOS; without it the game's memory is
+  made as before.
+- **About 10 GB less memory in use.** The NVIDIA driver maps its whole shader
+  cache into the process (8 and 4 GB files), and the pipelines it looked up stayed
+  in memory: 10.2 GB, a third of a 32 GB PC. Its pages now go back to Windows'
+  file cache every 10 seconds (`VICTORY_DRIVER_CACHE_TRIM=0` keeps them): 2 MB
+  of it in memory instead, the PC's memory in use 25 instead of 30-31 GB.
+- Tried and not kept: the GPU reading the game's ordinary memory in place (it
+  stalled the GPU and slowed the game), and copies of the page pool's windows
+  on the card (the card ran out of room for textures).
+
+Next: the remaining copies of the page pool (textures and streaming), which
+still take most of the processor's copy time and about 6 GB of the PC's memory.
 What comes next, and what does not render yet, is in `docs/roadmap.md`.
 
 We might show up on PortWatch VI soon at this rate.
@@ -143,6 +172,7 @@ We might show up on PortWatch VI soon at this rate.
 - Windows 10/11 x64, a CPU with AVX2
 - A Direct3D 12 GPU with shader model 6.6 and mesh shaders (NVIDIA RTX 20 series or newer)
 - Rust (the version in `rust-toolchain.toml`)
+- Resizable BAR on (with "Above 4G decoding") for `VICTORY_CARD_MEMORY=1`
 - Several GB of free Windows commit memory (raise the paging file if `crashes.log` reports error 1455)
 
 ## Build
@@ -191,6 +221,7 @@ These draw the same image and make the frame much shorter; set them before `run`
 | `VICTORY_CARD_BUFFERS_MIN_MB=1` `VICTORY_CARD_BUFFERS_MB=1024` | buffers of 1 MiB and up kept in the GPU's memory, where it finds what shaders changed |
 | `VICTORY_ASYNC_SUBMIT=1` | submissions prepared and sent on a thread of their own |
 | `VICTORY_FILL_WAIT=1` | fills of upload memory checked instead of waited for |
+| `VICTORY_CARD_MEMORY=1` | the game's write-combined memory on the card (needs Resizable BAR) |
 
 Not recommended yet: the relay (`VICTORY_RELAY=2`), which lost walls and models
 before and was not faster in the latest runs.
