@@ -4021,6 +4021,13 @@ mod window_tests {
     }
 }
 
+/// The software adapter's plain buffer (`card_merge_tests::warp_buffer`),
+/// for the refresh bench.
+#[cfg(test)]
+fn card_merge_tests_buffer() -> Option<windows::Win32::Graphics::Direct3D12::ID3D12Resource> {
+    card_merge_tests::warp_buffer()
+}
+
 #[cfg(test)]
 mod card_merge_tests {
     use super::{Card, Shadow};
@@ -4032,7 +4039,7 @@ mod card_merge_tests {
 
     /// A plain buffer on the software adapter: what a copy's `buffer` and
     /// its card's `staging` are; the merge never touches them.
-    fn warp_buffer() -> Option<ID3D12Resource> {
+    pub(super) fn warp_buffer() -> Option<ID3D12Resource> {
         // SAFETY: plain DXGI and D3D12 creation calls on the software adapter.
         unsafe {
             let factory: IDXGIFactory4 = CreateDXGIFactory2(DXGI_CREATE_FACTORY_FLAGS(0)).ok()?;
@@ -4148,4 +4155,132 @@ pub(crate) fn near(va: u64) -> String {
         ));
     }
     text
+}
+
+/// The refreshes of a frame without the title: some 3,500 small host copies
+/// of private, write-watched memory (as the world's frames refresh, 4 to 64
+/// KiB each), refreshed as a submission does (`host::flush`: one asking
+/// ahead, then the copies on the wide threads or one by one), with the
+/// title writing a few of them between submissions. Says the time a frame
+/// and a refresh take, to try cheaper refreshes without the game. Ignored
+/// by default; run it with
+/// `cargo test -p victory-gpu --release --lib shadow::refresh_bench -- --ignored --nocapture`.
+#[cfg(test)]
+mod refresh_bench {
+    use super::Shadow;
+    use std::sync::Arc;
+    use windows_sys::Win32::System::Memory::{MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_READWRITE, VirtualAlloc, VirtualFree};
+
+    const MEM_WRITE_WATCH: u32 = 0x20_0000;
+    /// Copies, submissions a frame, frames, and the share of copies the
+    /// title writes before each submission (in thousandths).
+    const COPIES: usize = 3500;
+    const SUBMISSIONS: usize = 33;
+    const FRAMES: usize = 20;
+    const WRITTEN_PER_MILLE: u64 = 30;
+
+    struct Lcg(u64);
+    impl Lcg {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            self.0 >> 33
+        }
+    }
+
+    /// `views`: every other copy is of view memory (a pagefile section
+    /// mapped as the title's pool is, so its copies are guarded), as in the
+    /// title's frames, where both kinds are refreshed side by side.
+    fn run(wide: bool, views: bool) -> (f64, f64, usize) {
+        use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+        use windows_sys::Win32::System::Memory::{CreateFileMappingW, FILE_MAP_WRITE, MEMORY_MAPPED_VIEW_ADDRESS, MapViewOfFile, UnmapViewOfFile};
+        let region = 512usize << 20;
+        // SAFETY: plain reservation of our own, released below.
+        let base = unsafe { VirtualAlloc(std::ptr::null(), region, MEM_RESERVE | MEM_COMMIT | MEM_WRITE_WATCH, PAGE_READWRITE) } as usize;
+        assert!(base != 0, "no write-watched memory");
+        // SAFETY: a fresh pagefile section mapped once, closed below.
+        let (section, view) = unsafe {
+            let section = CreateFileMappingW(INVALID_HANDLE_VALUE, std::ptr::null(), PAGE_READWRITE, 0, region as u32, std::ptr::null());
+            assert!(!section.is_null());
+            let view = MapViewOfFile(section, FILE_MAP_WRITE, 0, 0, region).Value as usize;
+            assert_ne!(view, 0);
+            crate::inplace::title_memory_view(view, region, section as usize, 0);
+            (section, view)
+        };
+        let buffer = super::card_merge_tests_buffer().expect("software adapter");
+        let mut rng = Lcg(7);
+        let (mut at, mut copies, mut keep) = (base, Vec::new(), Vec::new());
+        let mut at_view = view;
+        for n in 0..COPIES {
+            let len = ((rng.next() % 15 + 1) as usize) * 4096;
+            let in_view = views && n % 2 == 1;
+            let at = if in_view { &mut at_view } else { &mut at };
+            let mut data = vec![0u8; len];
+            let copy = Arc::new(Shadow::new(buffer.clone(), data.as_mut_ptr(), 0, *at as u64, len as u64));
+            keep.push(data);
+            copies.push((copy, *at, *at + len));
+            // Gaps as the title's heaps leave them.
+            *at += len + ((rng.next() % 4) as usize) * 4096;
+        }
+        assert!(at < base + region && at_view < view + region);
+        let per = COPIES.div_ceil(SUBMISSIONS);
+        let (mut calls, mut busy) = (0usize, std::time::Duration::ZERO);
+        let started = std::time::Instant::now();
+        for frame in 0..FRAMES {
+            for s in 0..SUBMISSIONS {
+                // The title writes a few copies' memory.
+                for (_, from, to) in &copies {
+                    if rng.next() % 1000 < WRITTEN_PER_MILLE {
+                        // SAFETY: our own committed memory.
+                        unsafe { *((from + (to - from) / 2) as *mut u8) = frame as u8 ^ s as u8 };
+                    }
+                }
+                let these: Vec<_> = copies.iter().skip(s * per).take(per).cloned().collect();
+                let t = std::time::Instant::now();
+                let ranges: Vec<(usize, usize)> = these.iter().map(|c| (c.1, c.2)).collect();
+                crate::watch::ask_ahead(&ranges);
+                if wide {
+                    let jobs: Vec<Box<dyn FnOnce() + Send>> = these
+                        .into_iter()
+                        .map(|(c, from, to)| Box::new(move || {
+                            c.update(from, to - from);
+                        }) as Box<dyn FnOnce() + Send>)
+                        .collect();
+                    calls += jobs.len();
+                    super::wide_run(jobs);
+                } else {
+                    for (c, from, to) in these {
+                        c.update(from, to - from);
+                        calls += 1;
+                    }
+                }
+                crate::watch::ask_ahead_done();
+                busy += t.elapsed();
+            }
+        }
+        let _ = started;
+        drop(copies);
+        crate::watch::title_memory_remapped(view, region);
+        // SAFETY: our own reservation, view and section.
+        unsafe {
+            VirtualFree(base as *mut _, 0, MEM_RELEASE);
+            UnmapViewOfFile(MEMORY_MAPPED_VIEW_ADDRESS { Value: view as *mut _ });
+            CloseHandle(section);
+        }
+        (busy.as_secs_f64() * 1000.0 / FRAMES as f64, busy.as_secs_f64() * 1e6 / calls as f64, calls / FRAMES)
+    }
+
+    #[test]
+    #[ignore]
+    fn refreshes_of_a_frame() {
+        for views in [false, true] {
+            for wide in [false, true] {
+                let (frame_ms, call_us, calls) = run(wide, views);
+                println!(
+                    "refresh bench ({}, {}): {calls} refreshes a frame, {frame_ms:.1} ms a frame, {call_us:.2} us a refresh",
+                    if views { "half in view memory" } else { "private memory" },
+                    if wide { "wide threads" } else { "one thread" }
+                );
+            }
+        }
+    }
 }
