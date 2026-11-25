@@ -15,11 +15,13 @@ GPU does about 78 ms of it, so the processor work around each of the frame's
    1 MiB is the setting (`run.bat`); the relay, alone or with the card buffers,
    was not faster and lost walls before. An Nsight trace of a heavy frame: the
    GPU works about 159 of 314 ms, shader cores idle 78%, no costly shader.
-2. **The settle at 128 lists in the air** (about 67 ms of waiting a frame in
-   heavy scenes): it waits for everything in the air and the GPU then stands
-   idle while the processor prepares. Settling only the oldest flights needs
-   per-flight snapshots (as the relay keeps); more lists made the waits for
-   upload fills worse (256: twelve a frame).
+2. **Done (25 November): 256 lists in the air.** At 128 the frame's lists
+   reached the limit once a frame and everything in the air was waited for
+   (36-42 ms, the GPU then idle). At 256 that settle is gone and the median
+   world frame went from 262 to 221 ms with the same image. Left: the settles
+   for upload fills (1.5-2 a frame, 20-36 ms), which also wait for
+   everything; waiting only for the flights that write what a fill reads
+   needs per-flight snapshots (as the relay keeps).
 3. **Per-submission processor work**, largest first: refreshes of host copies
    (~43 ms a frame on the presenting thread, ~35 on each worker), deferred
    steps (~33), upload fills (~10), copy-back (~13). (Snapshots and the

@@ -193,8 +193,12 @@ These draw the same image and make the frame much shorter; set them before `run`
 | `VICTORY_FILL_WAIT=1` | fills of upload memory checked instead of waited for |
 
 Not recommended yet: the relay (`VICTORY_RELAY=2`), which lost walls and models
-before and was not faster in the latest runs, and more than 128 lists in the air
-(`VICTORY_LATE_WAIT_LISTS=256`), which made frames slower.
+before and was not faster in the latest runs.
+
+Up to 256 lists are now in the air before every flight is settled (128 before;
+`VICTORY_LATE_WAIT_LISTS=128` brings that back): at 128 the frame's lists
+reached the limit once a frame and the GPU went idle while everything was
+waited for. The median world frame went from 262 to 221 ms with the same image.
 
 ## Frame times
 

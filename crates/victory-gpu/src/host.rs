@@ -2295,8 +2295,11 @@ mod relay_tests {
 }
 
 /// The most host lists in the air before the flights are settled
-/// (`VICTORY_LATE_WAIT_LISTS`, 128 in ForwardVI; `=256` is victory-fork's: with the
-/// relay it stopped the submitting thread twice a frame for 92-103 ms in
+/// (`VICTORY_LATE_WAIT_LISTS`, 256: at 128 the frame's lists reached it
+/// once a frame and every flight was settled, 36-42 ms of waiting while the
+/// card then stood idle; 256 took the median world frame from 262 to 221 ms
+/// with the same image, 192 to 234, ForwardVI's runs of 25 November.
+/// Before: with the relay 256 stopped the submitting thread twice a frame for 92-103 ms in
 /// all while the card stood idle 64-113 ms a frame, runs 158, 159 and 162;
 /// 32 settled the flights three times a
 /// frame in run 92 and 64 still 1.3-1.7 times in run 99, with 12,919 tables
@@ -2307,7 +2310,7 @@ mod relay_tests {
 fn late_most() -> usize {
     static MOST: OnceLock<usize> = OnceLock::new();
     *MOST.get_or_init(|| {
-        std::env::var("VICTORY_LATE_WAIT_LISTS").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(128).max(1)
+        std::env::var("VICTORY_LATE_WAIT_LISTS").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(256).max(1)
     })
 }
 

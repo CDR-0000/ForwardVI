@@ -27,7 +27,7 @@ use windows::Win32::Graphics::Direct3D12::*;
 use windows::Win32::Graphics::Dxgi::Common::DXGI_SAMPLE_DESC;
 use windows::core::Interface;
 
-/// Slots: submissions timed at once. Late wait keeps at most 128 lists in
+/// Slots: submissions timed at once. Late wait keeps at most 256 lists in
 /// the air, a few submissions' worth; a slot not free yet goes untimed.
 const SLOTS: usize = 1024;
 /// The lane's thread id in the trace (no thread of ours has it).
