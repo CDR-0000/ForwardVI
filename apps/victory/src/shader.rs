@@ -152,7 +152,21 @@ pub fn run(paths: Vec<PathBuf>, verbose: bool, disasm: bool, effects: bool) -> R
                                 t.programs.entry(key).or_insert_with(|| id.clone());
                             }
                             *t.native_stages.entry(n.stage).or_default() += 1;
-                            list.push(format!("{:?} {} B", n.stage, n.code.len()));
+                            // A compute program's group: its size, wave width and
+                            // shared memory (the host allows 32 KiB of it; the
+                            // console 64).
+                            let group = match &n.io {
+                                victory_shader::native::StageIo::Cs(io) => {
+                                    let [x, y, z] = io.threads;
+                                    format!(
+                                        " threads {x}x{y}x{z} wave{} lds {} B",
+                                        if n.wave64 { 64 } else { 32 },
+                                        io.lds_bytes()
+                                    )
+                                }
+                                _ => String::new(),
+                            };
+                            list.push(format!("{:?} {} B{group}", n.stage, n.code.len()));
                             match gfx10::decode(&n.code) {
                                 Ok(insts) => {
                                     t.decoded += 1;
