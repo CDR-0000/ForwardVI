@@ -115,6 +115,25 @@ processor and the GPU still take turns, the processor waiting for the GPU to
 empty about once a frame and the GPU waiting while the processor prepares. The
 relay, which keeps the GPU fed, was tried again (with and without the card
 buffers) and was not faster, so the next work is the processor's.
+
+Since then (same machine, profile builds with a GPU timeline beside the CPU
+threads, about 130 world frames a run):
+
+- victory-fork's submit thread (`VICTORY_ASYNC_SUBMIT=1`) and fills that do not
+  wait (`VICTORY_FILL_WAIT=1`) are merged and on in the recommended switches.
+- Streaming bursts (2,000-5,000 new textures in one frame) stalled the game for
+  0.5-3 s. Upload memory now comes from reusable 64 MB slabs instead of one
+  allocation per texture, textures that are only uploaded skip zeroing, and new
+  textures are made on several threads at once. Stall frames went from 884 to
+  about 590 ms, the 90th percentile from 516 to about 440 ms, and buffers made
+  during a burst from 126 a frame to none or nearly none.
+- Normal frames sit at about 255 ms with the GPU busy only about 80 ms of it:
+  most of the rest is keeping copies of game memory in sync with the GPU.
+
+The next step is a leaner design rather than more patching: the GPU reading
+game memory directly (no copies to refresh or copy back, and much less RAM),
+with textures converted on the GPU. It is built beside the current path behind
+a switch and measured before anything is removed.
 What comes next, and what does not render yet, is in `docs/roadmap.md`.
 
 We might show up on PortWatch VI soon at this rate.
@@ -170,6 +189,8 @@ These draw the same image and make the frame much shorter; set them before `run`
 | `VICTORY_INDIRECT_WINDOW=1` | indirect draws clamped 16-64 records a pass |
 | `VICTORY_LATE_WAIT=3` | the CPU and GPU overlap: submissions go to the GPU without a wait for each |
 | `VICTORY_CARD_BUFFERS_MIN_MB=1` `VICTORY_CARD_BUFFERS_MB=1024` | buffers of 1 MiB and up kept in the GPU's memory, where it finds what shaders changed |
+| `VICTORY_ASYNC_SUBMIT=1` | submissions prepared and sent on a thread of their own |
+| `VICTORY_FILL_WAIT=1` | fills of upload memory checked instead of waited for |
 
 Not recommended yet: the relay (`VICTORY_RELAY=2`), which lost walls and models
 before and was not faster in the latest runs, and more than 128 lists in the air
