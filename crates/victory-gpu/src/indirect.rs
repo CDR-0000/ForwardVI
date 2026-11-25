@@ -56,6 +56,8 @@ RWByteAddressBuffer dst_args : register(u0);
 // records run empty.
 RWByteAddressBuffer budget : register(u1);
 static const uint BUDGET = 1u << 27;
+// The vertices or indices an instance from which a draw record runs empty.
+static const uint MOST_DRAW = 1u << 23;
 // Groups of one dispatch; more run empty.
 static const uint GROUPS = 1u << 20;
 // Each group charges the budget once: the costs of its records go here,
@@ -99,6 +101,21 @@ void main(uint3 id : SV_DispatchThreadID, uint gi : SV_GroupIndex) {
         uint count = min(want.x, 1u << 24);
         uint instances = min(want.y, (1u << 26) / max(count, 1u));
         cost = count * instances;
+        // A record that asks for MOST_DRAW vertices or indices an instance
+        // or more is no draw of the title's (no mesh of a console title has
+        // 2.8 million triangles): it runs empty and charges nothing. Run
+        // 206's window check found one list with 90 draws of 2^24 vertices
+        // and one instance each. Clamped one draw at a time, the list's
+        // budget lets eight of them run (2^27 in all) and empties the other
+        // 82; served from a window, whose records are charged once however
+        // often they are drawn, all 90 ran: 1.5 thousand million vertices
+        // in one list, with windows on in the runs that lost the device
+        // (201, 204).
+        if (count >= MOST_DRAW) {
+            count = 0;
+            instances = 0;
+            cost = 0;
+        }
         draw_counts = uint2(count, instances);
     } else if (active && kind == 2) {
         uint3 asked = src_args.Load3(src_at);
@@ -1462,9 +1479,11 @@ void main() {
 
         let mut initial_src = vec![0u8; total_bytes];
         for i in 0..RECORDS as usize {
+            // The first record is no draw (2^24 indices): it runs empty
+            // and charges nothing.
             let words: [u32; 6] = [
-                u32::MAX,                    // IndexCount -> clamps to 1 << 24
-                u32::MAX,                    // InstanceCount -> clamps to 4 (cost = 1 << 26)
+                if i == 0 { 1 << 24 } else { 1 << 22 }, // IndexCount
+                if i == 0 { 1 } else { u32::MAX }, // InstanceCount -> clamps to 16 (cost = 1 << 26)
                 1000 + i as u32,             // StartIndexLocation
                 (-200i32 + i as i32) as u32, // BaseVertexLocation
                 5000 + i as u32,             // StartInstanceLocation
@@ -1527,9 +1546,11 @@ void main() {
 
         let mut kept = 0usize;
         let mut zeroed = 0usize;
+        let mut kept_at = Vec::new();
         for i in 0..RECORDS as usize {
             let rec = &out_words[i * 6..(i + 1) * 6];
-            if rec[0] == (1 << 24) && rec[1] == 4 {
+            if rec[0] == (1 << 22) && rec[1] == 16 {
+                kept_at.push(i);
                 kept += 1;
             } else {
                 assert_eq!((rec[0], rec[1]), (0, 0), "excess draw must be zeroed");
@@ -1541,6 +1562,14 @@ void main() {
             assert_eq!(rec[5], 0xCAFE_0000 | (i as u32));
         }
         assert_eq!((kept, zeroed), (2, (RECORDS as usize) - 2));
+        // A group charges its records once, in lane order; which of the two
+        // groups charges first is the card's to say. So the draws that fit
+        // are the first two real ones of one group: 1 and 2 (record 0 runs
+        // empty), or 64 and 65.
+        assert!(
+            kept_at == [1, 2] || kept_at == [64, 65],
+            "the first two real draws of one group fit the budget: {kept_at:?}"
+        );
     }
 
     /// Exercises `HostList::indirect_scratch`, `bound`, the scratch buffer's
