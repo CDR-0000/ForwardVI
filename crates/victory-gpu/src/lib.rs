@@ -36,6 +36,8 @@ mod draw;
 pub mod dxgi;
 pub mod fence;
 pub mod frame;
+#[cfg(all(windows, feature = "profile"))]
+mod gputime;
 #[cfg(windows)]
 mod framegraph;
 #[cfg(windows)]
@@ -95,6 +97,9 @@ pub(crate) fn profile_frame() {
             const { std::cell::RefCell::new(None) };
     }
     let number = FRAMES.fetch_add(1, Ordering::Relaxed);
+    // The card's lane: what it finished since, and the frame's counters.
+    #[cfg(windows)]
+    crate::host::gpu_lane_frame();
     FRAME.with(|frame| {
         let mut frame = frame.borrow_mut();
         frame.take();

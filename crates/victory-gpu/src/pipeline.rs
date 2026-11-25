@@ -734,6 +734,14 @@ static FUNCTIONS: Table<24> = {
 pub(crate) mod host;
 #[cfg(windows)]
 mod library;
+
+/// Host pipelines created and loaded from the library since the start (the
+/// frame trace's counters).
+#[cfg(all(windows, feature = "profile"))]
+pub(crate) fn library_counts() -> (u64, u64) {
+    use std::sync::atomic::Ordering::Relaxed;
+    (library::MADE.load(Relaxed), library::LOADED.load(Relaxed))
+}
 #[cfg(windows)]
 mod make;
 

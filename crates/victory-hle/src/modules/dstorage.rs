@@ -498,6 +498,18 @@ fn work(scheduler: &'static Scheduler) {
         };
         drop(lanes);
         let started = std::time::Instant::now();
+        // In the frame trace (the `profile` feature): each request a worker
+        // runs, with its bytes and whether it is BCPack or zlib.
+        #[cfg(feature = "profile")]
+        let _profile_scope = tracing::span!(
+            target: "profile",
+            tracing::Level::INFO,
+            "dstorage request",
+            bytes = job.request.destination_size,
+            bcpack = job.request.options & BCPACK != 0,
+            zlib = job.request.options & ZLIB != 0
+        )
+        .entered();
         let result = execute(&job.request);
         walls_request(&job.request, &result, started);
         lanes = scheduler.lock();

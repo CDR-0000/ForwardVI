@@ -52,6 +52,21 @@ where
 {
     use tracing_subscriber::Layer;
     let path = std::env::var("VICTORY_PROFILE").unwrap_or_else(|_| "profile.json".into());
+    // The trace's clock starts as it is made: the processor's performance
+    // counter now, for the card's lane (victory-gpu's `gputime`), which
+    // puts the card's timestamps on the same clock.
+    #[cfg(windows)]
+    {
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn QueryPerformanceCounter(count: *mut i64) -> i32;
+        }
+        let mut t0 = 0i64;
+        // SAFETY: a plain query into a local.
+        unsafe { QueryPerformanceCounter(&mut t0) };
+        // SAFETY: set once, at start-up, before the threads that read it.
+        unsafe { std::env::set_var("VICTORY_PROFILE_T0", t0.to_string()) };
+    }
     let (layer, guard) = tracing_chrome::ChromeLayerBuilder::new()
         .file(&path)
         .include_args(true)

@@ -436,6 +436,12 @@ pub(crate) static HEAP_TEXTURES_QUEUE: [AtomicU64; 5] = [const { AtomicU64::new(
 pub(crate) static HEAP_TEXTURES_PARTLY: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
 static DROPPED: AtomicU64 = AtomicU64::new(0);
 
+/// Draws and dispatches dropped since the start (the frame trace's counters).
+#[cfg(feature = "profile")]
+pub(crate) fn dropped_count() -> u64 {
+    DROPPED.load(Ordering::Relaxed)
+}
+
 /// Marks the last traced draw as not run on the host.
 #[cfg(feature = "diagnostics")]
 fn dropped(pipeline: usize) {

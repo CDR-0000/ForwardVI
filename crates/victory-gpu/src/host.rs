@@ -2402,6 +2402,13 @@ fn line() -> std::sync::MutexGuard<'static, Line> {
     LINE.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// The `WHY_` places' names, for the frame trace.
+#[cfg(feature = "profile")]
+const WHY_NAMES: [&str; 11] = [
+    "-", "-", "sync", "card done", "memory value", "stale", "title memory read", "a step of ours", "lists in the air",
+    "bottom-of-pipe writes", "fence wait",
+];
+
 /// Why flights were settled ([`LATE_STATS`]' places from 2 on).
 const WHY_SYNC: usize = 2;
 const WHY_CARD_DONE: usize = 3;
@@ -5087,7 +5094,15 @@ impl Host {
     /// the merge writes the copies' CPU side, which a flight still on the
     /// card may be writing too.
     fn settle(&self, submitted: &mut u64, why: usize) {
-        profile_scope!("wait for the card");
+        // Named with why it settled, for the frame report.
+        #[cfg(feature = "profile")]
+        let _profile_scope = tracing::span!(
+            target: "profile",
+            tracing::Level::INFO,
+            "wait for the card",
+            why = WHY_NAMES.get(why).copied().unwrap_or("?")
+        )
+        .entered();
         if !late() {
             return;
         }
@@ -5369,6 +5384,14 @@ impl Host {
         let prepared = std::time::Instant::now();
         if late {
             *submitted += 1;
+            // The card's lane in the frame trace: a timestamp before and after.
+            #[cfg(feature = "profile")]
+            let timed = crate::gputime::around(&self.device, &self.queue);
+            #[cfg(feature = "profile")]
+            if let Some((begin, end, _)) = &timed {
+                lists.insert(0, Some(begin.clone()));
+                lists.push(Some(end.clone()));
+            }
             // SAFETY: closed lists; the fence is ours.
             let signalled = {
                 profile_scope!("ExecuteCommandLists");
@@ -5381,6 +5404,10 @@ impl Host {
             self.card_sent();
             if let Err(e) = signalled {
                 fail(format_args!("a submission sent ahead could not be followed by a signal ({e})"));
+            }
+            #[cfg(feature = "profile")]
+            if let Some((_, _, slot)) = timed {
+                crate::gputime::sent(slot, *submitted, this_submission);
             }
             let back = declared_writes(runs);
             let writes = runs.iter().flat_map(|l| l.deferred().writes.clone()).collect();
@@ -7489,6 +7516,17 @@ impl Meter {
         });
     }
 }
+
+/// Once a frame (`profile` feature): the card's lane of the frame trace
+/// takes what the card has finished (`crate::gputime`).
+#[cfg(feature = "profile")]
+pub(crate) fn gpu_lane_frame() {
+    if let Some(h) = host() {
+        crate::gputime::frame(&h.queue, &h.fence);
+    }
+}
+#[cfg(not(feature = "profile"))]
+pub(crate) fn gpu_lane_frame() {}
 
 impl Host {
     /// Shows `texture`, which is in `state` (a host state) and stays in it,

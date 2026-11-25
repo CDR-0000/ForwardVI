@@ -48,6 +48,9 @@ windows-core = { workspace = true, optional = true }
 tempfile.workspace = true
 
 [features]
+# Spans of the DirectStorage workers in the frame trace (apps/victory's
+# `profile`).
+profile = []
 # Debugging switches (scripted keys and the like).
 diagnostics = ["victory-gpu/diagnostics", "victory-loader/diagnostics", "dep:windows", "dep:windows-core"]
 
