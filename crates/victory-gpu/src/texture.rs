@@ -328,7 +328,28 @@ pub(crate) static UNLOCKED: [std::sync::atomic::AtomicU64; 2] = [const { std::sy
 pub(crate) static REFRESH_WAITS: [std::sync::atomic::AtomicU64; 4] = [const { std::sync::atomic::AtomicU64::new(0) }; 4];
 
 /// `f`'s result, its time added to [`REFRESH_WAITS`]' place `slot`.
+/// A texture's hash (a step of its own in the frame trace).
+fn texture_hash(bytes: &[u8]) -> blake3::Hash {
+    profile_scope!("texture: hash");
+    blake3::hash(bytes)
+}
+
+/// Reads a texture's title memory through the kernel (a step of its own in
+/// the frame trace).
+fn read_title(dst: *mut u8, src: *const u8, len: usize) {
+    profile_scope!("texture: read memory");
+    crate::host::copy_mapped(dst, src, len, false);
+}
+
 fn waited<T>(slot: usize, f: impl FnOnce() -> T) -> T {
+    #[cfg(feature = "profile")]
+    let _profile_scope = match slot {
+        0 => tracing::span!(target: "profile", tracing::Level::INFO, "texture: own lock"),
+        1 => tracing::span!(target: "profile", tracing::Level::INFO, "texture: ask written pages"),
+        2 => tracing::span!(target: "profile", tracing::Level::INFO, "texture: mapping lock"),
+        _ => tracing::span!(target: "profile", tracing::Level::INFO, "texture: wait"),
+    }
+    .entered();
     let started = std::time::Instant::now();
     let out = f();
     REFRESH_WAITS[slot].fetch_add(started.elapsed().as_micros() as u64, std::sync::atomic::Ordering::Relaxed);
@@ -373,7 +394,7 @@ fn through_copy() -> bool {
 /// there read as zeros. The bytes are those a read in place would see.
 fn with_title<R>(memory: *const u8, size: usize, f: impl FnOnce(&[u8]) -> R) -> R {
     with_read(size, |read| {
-        crate::host::copy_mapped(read.as_mut_ptr(), memory, size, false);
+        read_title(read.as_mut_ptr(), memory, size);
         f(read)
     })
 }
@@ -692,7 +713,7 @@ impl Staging {
             // Read through the copy, which stands unmapped pages: memory of
             // big pools is too slow to ask page by page.
             with_read(size, |read| {
-                crate::host::copy_mapped(read.as_mut_ptr(), self.memory, size, false);
+                read_title(read.as_mut_ptr(), self.memory, size);
                 self.detile(read);
             });
             #[cfg(feature = "diagnostics")]
@@ -762,8 +783,8 @@ impl Staging {
             #[cfg(feature = "diagnostics")]
             crate::copystat::add(crate::copystat::C::TexHashed, size as u64);
             let changed = with_read(size, |read| {
-                crate::host::copy_mapped(read.as_mut_ptr(), self.memory, size, false);
-                let hash = blake3::hash(read);
+                read_title(read.as_mut_ptr(), self.memory, size);
+                let hash = texture_hash(read);
                 if last.hash == Some(hash) {
                     return false;
                 }
@@ -787,7 +808,7 @@ impl Staging {
         }
         if through_copy() {
             return with_title(self.memory, size, |tiled| {
-                let hash = blake3::hash(tiled);
+                let hash = texture_hash(tiled);
                 #[cfg(feature = "diagnostics")]
                 crate::copystat::add(crate::copystat::C::TexHashed, size as u64);
                 if last.hash == Some(hash) {
@@ -807,7 +828,7 @@ impl Staging {
         // SAFETY: committed memory of the texture's layout size, and it
         // stays committed while `_mapped` is held.
         let tiled = unsafe { std::slice::from_raw_parts(self.memory, size) };
-        let hash = blake3::hash(tiled);
+        let hash = texture_hash(tiled);
         #[cfg(feature = "diagnostics")]
         crate::copystat::add(crate::copystat::C::TexHashed, size as u64);
         if last.hash == Some(hash) {
@@ -852,7 +873,7 @@ impl Staging {
             if !crate::host::read_into(self.memory, read) {
                 return false;
             }
-            let hash = blake3::hash(read);
+            let hash = texture_hash(read);
             if last.hash != Some(hash) {
                 last.hash = Some(hash);
                 self.detile(read);
@@ -871,6 +892,7 @@ impl Staging {
 
     /// Detiles `tiled` (the texture's memory) into the staging buffer.
     fn detile(&self, tiled: &[u8]) {
+        profile_scope!("texture: detile");
         self.dirty.store(true, std::sync::atomic::Ordering::Relaxed);
         #[cfg(feature = "diagnostics")]
         if tiled.iter().all(|&b| b == 0) {

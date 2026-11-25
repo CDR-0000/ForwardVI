@@ -4231,6 +4231,7 @@ impl Host {
             profile_scope!("copy back: card copies");
             self.card_back(card, &mut submitted, &mut std::collections::HashSet::new());
         }
+        #[cfg_attr(not(feature = "diagnostics"), allow(unused_variables))]
         let back = {
             profile_scope!("copy back: shader writes");
             let back = declared_writes(runs);
