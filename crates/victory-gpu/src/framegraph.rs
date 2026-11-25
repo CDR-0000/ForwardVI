@@ -1,16 +1,15 @@
 //! Frame times as they happen: every present's time since the one before.
 //!
-//! - The window caption shows the last frame, the median of the last two
-//!   seconds (and its frames a second) and the worst 1% of the last ten
-//!   seconds. A plain "frames in the last second" read 1-2 fps when one
-//!   stall of a second fell in it, at 200-300 ms frames.
 //! - `VICTORY_FRAME_GRAPH=1`: a small window of its own draws one bar per
 //!   frame (newest on the right, a log scale from 16 ms to 2 s), green up to
-//!   100 ms, yellow up to 250, red above. Its own thread paints it four
-//!   times a second from the kept times; the presenting thread only adds a
-//!   number under a lock.
-//! - `VICTORY_FRAME_LOG=<file>`: one line per frame (`frame,ms`), flushed
-//!   every second, for comparing runs frame by frame.
+//!   100 ms, yellow up to 250, red above, under the median of the last two
+//!   seconds (and its frames a second), the last frame, the worst 1% of the
+//!   last ten seconds and the draws a frame. A plain "frames in the last
+//!   second" read 1-2 fps when one stall of a second fell in it, at 200-300
+//!   ms frames. Its own thread paints it four times a second from the kept
+//!   times; the presenting thread only adds two numbers under a lock.
+//! - `VICTORY_FRAME_LOG=<file>`: one line per frame (`frame,ms,draws`),
+//!   flushed every second, for comparing runs frame by frame.
 
 use std::collections::VecDeque;
 use std::sync::{Mutex, OnceLock};
@@ -24,6 +23,9 @@ struct Times {
     last: Option<Instant>,
     frames: u64,
     ms: VecDeque<f32>,
+    /// Draws of each kept frame, and the draw count at the last present.
+    draws: VecDeque<u32>,
+    drawn: u64,
     log: Option<std::io::BufWriter<std::fs::File>>,
     flushed: Option<Instant>,
 }
@@ -32,6 +34,8 @@ static TIMES: Mutex<Times> = Mutex::new(Times {
     last: None,
     frames: 0,
     ms: VecDeque::new(),
+    draws: VecDeque::new(),
+    drawn: 0,
     log: None,
     flushed: None,
 });
@@ -46,7 +50,9 @@ pub(crate) fn presented() {
     static LOG: OnceLock<Option<String>> = OnceLock::new();
     let log = LOG.get_or_init(|| std::env::var("VICTORY_FRAME_LOG").ok().filter(|p| !p.trim().is_empty()));
     let now = Instant::now();
+    let drawn = crate::draw::drawn();
     let mut t = times();
+    let draws = drawn.saturating_sub(std::mem::replace(&mut t.drawn, drawn)).min(u64::from(u32::MAX)) as u32;
     let Some(last) = t.last.replace(now) else {
         drop(t);
         start_graph();
@@ -56,15 +62,17 @@ pub(crate) fn presented() {
     t.frames += 1;
     if t.ms.len() == KEPT {
         t.ms.pop_front();
+        t.draws.pop_front();
     }
     t.ms.push_back(ms as f32);
+    t.draws.push_back(draws);
     if let Some(path) = log {
         if t.log.is_none() && t.flushed.is_none() {
             t.flushed = Some(now);
             match std::fs::File::create(path) {
                 Ok(f) => {
                     let mut w = std::io::BufWriter::new(f);
-                    let _ = writeln!(w, "frame,ms");
+                    let _ = writeln!(w, "frame,ms,draws");
                     t.log = Some(w);
                 }
                 Err(e) => tracing::warn!(error = %e, path, "no frame log"),
@@ -72,7 +80,7 @@ pub(crate) fn presented() {
         }
         let frame = t.frames;
         if let Some(w) = t.log.as_mut() {
-            let _ = writeln!(w, "{frame},{ms:.2}");
+            let _ = writeln!(w, "{frame},{ms:.2},{draws}");
         }
         if t.flushed.is_some_and(|f| now - f >= std::time::Duration::from_secs(1)) {
             t.flushed = Some(now);
@@ -124,27 +132,14 @@ pub(crate) fn stats_of(ms: &[f32]) -> Option<Stats> {
     Some(Stats { last, median, worst })
 }
 
-/// [`Stats`] of the frames so far.
-pub(crate) fn stats() -> Option<Stats> {
-    let t = times();
-    let (a, b) = t.ms.as_slices();
-    if b.is_empty() {
-        stats_of(a)
-    } else {
-        stats_of(&t.ms.iter().copied().collect::<Vec<_>>())
+/// The median draws a frame of the newest `n` frames of `draws`.
+fn median_draws(draws: &[u32], n: usize) -> u32 {
+    let mut v: Vec<u32> = draws[draws.len().saturating_sub(n.max(1))..].to_vec();
+    if v.is_empty() {
+        return 0;
     }
-}
-
-/// The caption's text after the title's own.
-pub(crate) fn caption(draws: f64) -> Option<String> {
-    let s = stats()?;
-    Some(format!(
-        " | ForwardVI {:.1} fps (median {:.0} ms) | last {:.0} ms | worst 1% {:.0} ms | {draws:.0} draws/frame",
-        1000.0 / s.median.max(0.001),
-        s.median,
-        s.last,
-        s.worst
-    ))
+    v.sort_unstable();
+    v[v.len() / 2]
 }
 
 /// Starts the graph window's thread once, with `VICTORY_FRAME_GRAPH=1`.
@@ -285,7 +280,10 @@ mod graph {
             SelectObject(mem, old_pen);
             let _ = DeleteObject(grid.into());
 
-            let ms: Vec<f32> = super::times().ms.iter().copied().collect();
+            let (ms, draws): (Vec<f32>, Vec<u32>) = {
+                let t = super::times();
+                (t.ms.iter().copied().collect(), t.draws.iter().copied().collect())
+            };
             // One bar a frame, two pixels wide, newest on the right.
             let fits = ((right - left) / 2).max(1) as usize;
             let shown = &ms[ms.len().saturating_sub(fits)..];
@@ -302,13 +300,26 @@ mod graph {
 
             SetTextColor(mem, rgb(230, 230, 235));
             let text = match super::stats_of(&ms) {
-                Some(s) => format!(
-                    "{:.1} fps (median {:.0} ms, last 2 s)   last {:.0} ms   worst 1% {:.0} ms (10 s)",
-                    1000.0 / s.median.max(0.001),
-                    s.median,
-                    s.last,
-                    s.worst
-                ),
+                Some(s) => {
+                    // The frames of the last two seconds, for the draws.
+                    let mut n = 0;
+                    let mut sum = 0.0;
+                    for &m in ms.iter().rev() {
+                        n += 1;
+                        sum += m;
+                        if sum >= 2000.0 {
+                            break;
+                        }
+                    }
+                    format!(
+                        "{:.1} fps (median {:.0} ms, last 2 s)   last {:.0} ms   worst 1% {:.0} ms (10 s)   {} draws/frame",
+                        1000.0 / s.median.max(0.001),
+                        s.median,
+                        s.last,
+                        s.worst,
+                        super::median_draws(&draws, n)
+                    )
+                }
                 None => "waiting for frames".to_owned(),
             };
             let text: Vec<u16> = text.encode_utf16().collect();
@@ -344,6 +355,13 @@ mod tests {
         let s = stats_of(&ms).unwrap();
         assert_eq!(s.median, 200.0);
         assert_eq!(s.worst, 1500.0);
+    }
+
+    #[test]
+    fn median_draws_of_the_newest_frames() {
+        assert_eq!(median_draws(&[], 5), 0);
+        assert_eq!(median_draws(&[10, 2000, 3000, 1000], 3), 2000);
+        assert_eq!(median_draws(&[7], 0), 7);
     }
 
     #[test]

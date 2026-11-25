@@ -6793,10 +6793,9 @@ impl Meter {
             self.caption = Some(buffer);
         }
         let Some(caption) = &self.caption else { return };
-        // The frame times of the last seconds (`crate::framegraph`), not
-        // this second's average, which one stall pulls down to 1-2 fps.
-        let text = crate::framegraph::caption(draws)
-            .unwrap_or_else(|| format!(" | ForwardVI {fps:.0} fps {ms:.1} ms/frame {draws:.0} draws/frame"));
+        // The name only: frame times are in the frame graph
+        // (`VICTORY_FRAME_GRAPH=1`) and the log line.
+        let text = " | ForwardVI";
         let mut text: Vec<u16> = caption.iter().copied().chain(text.encode_utf16()).collect();
         text.push(0);
         // Setting the text waits for the window's thread (a title thread,
