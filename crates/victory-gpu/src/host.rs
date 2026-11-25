@@ -6571,6 +6571,7 @@ impl Meter {
         tracing::debug!(target: "victory_gpu::frame", token = crate::frame::current(), "present");
         #[cfg(feature = "diagnostics")]
         crate::copystat::presented();
+        crate::framegraph::presented();
         self.frames += 1;
         #[cfg(feature = "diagnostics")]
         {
@@ -6792,7 +6793,10 @@ impl Meter {
             self.caption = Some(buffer);
         }
         let Some(caption) = &self.caption else { return };
-        let text = format!(" | ForwardVI {fps:.0} fps {ms:.1} ms/frame {draws:.0} draws/frame");
+        // The frame times of the last seconds (`crate::framegraph`), not
+        // this second's average, which one stall pulls down to 1-2 fps.
+        let text = crate::framegraph::caption(draws)
+            .unwrap_or_else(|| format!(" | ForwardVI {fps:.0} fps {ms:.1} ms/frame {draws:.0} draws/frame"));
         let mut text: Vec<u16> = caption.iter().copied().chain(text.encode_utf16()).collect();
         text.push(0);
         // Setting the text waits for the window's thread (a title thread,
