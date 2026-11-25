@@ -105,6 +105,7 @@ The GPU's share of a frame went from about 270 ms to 78 ms; most of what is left
 is processor work around each of the frame's 34 submissions, and the card and
 the processor still take turns. Making them overlap without losing what the
 image needs (the relay's problem) is the next step.
+What comes next, and what does not render yet, is in `docs/roadmap.md`.
 
 We might show up on PortWatch VI soon at this rate.
 
