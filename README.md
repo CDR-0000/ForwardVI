@@ -92,9 +92,12 @@ On top of ztrx so far, each with credit to its authors:
 
 ## Status (2026-11-26)
 
-Boots through the intro and is playable through the opening mission. Anything in
-shadow is still dark and bright scenes overexpose (the game's ray-traced lighting
-runs as plain compute work, without the card's ray-tracing hardware).
+Boots through the intro and is playable through the opening mission, now at
+about 6 frames a second while the world loads in (a median of about 165 ms a
+frame, from about 260 ms on 25 November) and 9-23 frames a second in calmer
+stretches later on. Anything in shadow is still dark and bright scenes
+overexpose (the game's ray-traced lighting runs as plain compute work, without
+the card's ray-tracing hardware).
 
 **Frame time in the world**, RTX 3080 Ti and Ryzen 7 7800X3D, the median of the
 last 30 frames of a run stopped 10-20 seconds into the 3D scene:
@@ -134,6 +137,22 @@ threads, about 130 world frames a run):
   during a burst from 126 a frame to none or nearly none.
 - Normal frames sit at about 255 ms with the GPU busy only about 80 ms of it:
   most of the rest is keeping copies of game memory in sync with the GPU.
+
+**Frame time in the world since then**, same machine, measured with profile
+builds: the median of every world frame of a run (all 150-200 frames of 100 ms
+or more from loading into the 3D scene to 10-20 seconds in), which counts the
+heavy frames the table above leaves out:
+
+| Step | Median frame | Frames a second | 90th percentile |
+|---|---:|---:|---:|
+| Streaming stalls work, the submit thread and fills that do not wait | 259-262 ms | 3.8 | 415-442 ms |
+| + 256 command lists in flight | 221 ms | 4.5 | 500 ms |
+| + the game's GPU memory on the card (Resizable BAR) | 205 ms | 4.9 | 556 ms |
+| + constants it holds copied card to card on the GPU | **163-168 ms** | **6.0** | **262-293 ms** |
+
+Later in play, past the loading bursts, the sampling runs (`sample.bat`, 20
+seconds starting about a minute after the first frame) measured 43-115 ms a
+frame on average, 9-23 frames a second, depending on the scene.
 
 26 November:
 
