@@ -4228,10 +4228,15 @@ impl Host {
         // For copies in the card's memory the compare has run there: the
         // pieces that differ are fetched and merged.
         if let Some(card) = &card {
+            profile_scope!("copy back: card copies");
             self.card_back(card, &mut submitted, &mut std::collections::HashSet::new());
         }
-        let back = declared_writes(runs);
-        hand_back(&back);
+        let back = {
+            profile_scope!("copy back: shader writes");
+            let back = declared_writes(runs);
+            hand_back(&back);
+            back
+        };
         if let Some(card) = card {
             self.card_done(card);
         }
@@ -5201,6 +5206,7 @@ impl HostList {
             let started = std::time::Instant::now();
             let copied = match step {
                 &Step::Copy(dst, src, len) => {
+                    profile_scope!("copy title memory");
                     #[cfg(feature = "diagnostics")]
                     {
                         add(C::Copies, 1);
@@ -5213,6 +5219,7 @@ impl HostList {
                     len
                 }
                 &Step::Fill(dst, src, len) => {
+                    profile_scope!("fill upload memory");
                     #[cfg(feature = "diagnostics")]
                     {
                         add(C::Copies, 1);
@@ -5231,6 +5238,7 @@ impl HostList {
                     continue;
                 }
                 Step::Run(work) | Step::Host(work) => {
+                    profile_scope!("host step");
                     if matches!(step, Step::Run(_)) {
                         batch.title_written();
                     }
@@ -5369,6 +5377,7 @@ impl Batch {
     }
 
     fn flush(&mut self) {
+        profile_scope!("refresh copies");
         self.index.clear();
         // One write-watch asking for the copies that lie close together,
         // not one per copy.
