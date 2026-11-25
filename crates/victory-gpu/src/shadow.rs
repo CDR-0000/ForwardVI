@@ -1748,11 +1748,24 @@ fn back_piece(
             i += 1;
         }
         if i > start {
-            runs.push((start, i - start));
+            // Runs a short gap apart are written as one: each run is a
+            // system call (`write_mapped`), and a shader's words leave
+            // bytes that happen to be unchanged between them, which split
+            // a piece into hundreds of runs (the copy-back took 703 ms a
+            // frame instead of 59). The gap's bytes are the title's as just
+            // read; a gap wider than [`RUN_GAP`] is still left alone.
+            match runs.last_mut() {
+                Some((at, len)) if start - (*at + *len) <= RUN_GAP => *len = i - *at,
+                _ => runs.push((start, i - start)),
+            }
         }
     }
     Some((first, n))
 }
+
+/// Bytes between two runs of the GPU's bytes up to which [`back_piece`]
+/// joins them into one write: a cache line.
+const RUN_GAP: usize = 64;
 
 /// Since the last frame-rate line, of [`Shadow::merge_under_writes`]: pages
 /// compared, changed runs put in, and their bytes.
@@ -1792,7 +1805,7 @@ fn changed_runs(now: &[u8], was: &[u8]) -> Vec<(usize, usize)> {
 
 #[cfg(test)]
 mod merge_tests {
-    use super::{PIECE, back_piece, changed_runs};
+    use super::{PIECE, RUN_GAP, back_piece, changed_runs};
 
     /// A piece put back takes the GPU's bytes where the copy changed and
     /// the title's everywhere else, reads and writes title memory only from
@@ -1826,8 +1839,9 @@ mod merge_tests {
         wanted[4] = gpu[9];
         assert_eq!(scratch, wanted);
         assert_eq!(host[5..10], wanted);
-        // Only the GPU's two bytes are written back (upstream #2009).
-        assert_eq!(runs, [(0, 1), (4, 1)]);
+        // The GPU's two bytes, and the title's three between them as read,
+        // in one write: runs closer than `RUN_GAP` are joined.
+        assert_eq!(runs, [(0, 5)]);
         // The copy outside the stretch is left as it was.
         assert!(host[..5] == gpu[..5] && host[10..] == gpu[10..]);
         assert!(scratch.capacity() < PIECE / 2, "scratch of {} bytes for a stretch of 5", scratch.capacity());
@@ -1877,7 +1891,27 @@ mod merge_tests {
         assert_eq!(back_piece(&mut host, &old, &mut scratch, &mut mask, &mut runs, read), Some((1, 4)));
         assert_eq!(scratch, [20, 3, 44, 50], "the title's byte where both changed");
         assert_eq!(host[1..5], [20, 3, 44, 50], "the copy takes the result");
-        assert_eq!(runs, [(0, 1), (3, 1)], "the GPU's bytes only");
+        assert_eq!(runs, [(0, 4)], "the GPU's bytes, joined over the short gap");
+    }
+
+    /// Runs of the GPU's bytes further apart than `RUN_GAP` stay apart: the
+    /// title's bytes between them are not written (upstream #2009); closer
+    /// ones are one write.
+    #[test]
+    fn runs_further_apart_than_the_gap_stay_apart() {
+        let old = vec![0u8; 4 * RUN_GAP];
+        let mut host = old.clone();
+        for at in [0, 1, 1 + RUN_GAP + 1, 3 * RUN_GAP] {
+            host[at] = 7;
+        }
+        let (mut scratch, mut mask, mut runs) = (Vec::new(), Vec::new(), Vec::new());
+        let read = |first: usize, into: &mut [u8]| {
+            into.copy_from_slice(&old[first..first + into.len()]);
+            true
+        };
+        assert_eq!(back_piece(&mut host, &old, &mut scratch, &mut mask, &mut runs, read), Some((0, 3 * RUN_GAP + 1)));
+        // Bytes 0-1 and 66 are a gap of 64 apart (joined); 192 is further.
+        assert_eq!(runs, [(0, RUN_GAP + 3), (3 * RUN_GAP, 1)]);
     }
 
     /// The runs hold exactly the bytes that differ: putting them into the
