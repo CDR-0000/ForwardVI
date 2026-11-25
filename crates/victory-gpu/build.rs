@@ -1,6 +1,10 @@
 //! Fingerprints the shader translator, so that cached translations
 //! (`src/shader_cache.rs`) last until the translator itself changes and not
 //! only until the next build of anything.
+//!
+//! D3D12 Agility SDK exports for this crate's test executables (`src/agility.rs`), as in
+//! `victory-shader`'s build script: exported only when `cargo xtask agility` has put the
+//! runtime in this profile's `D3D12\` folder, else the in-box runtime is used.
 
 use std::path::{Path, PathBuf};
 
@@ -42,4 +46,15 @@ fn main() {
     }
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rustc-env=VICTORY_TRANSLATOR={}", hash.finalize().to_hex());
+    // OUT_DIR is <target>/<profile>/build/<package>-<hash>/out.
+    let out = PathBuf::from(std::env::var_os("OUT_DIR").expect("cargo sets OUT_DIR"));
+    if let Some(profile) = out.ancestors().nth(3) {
+        let core = profile.join("D3D12").join("D3D12Core.dll");
+        if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") && core.exists() {
+            println!("cargo:rerun-if-changed={}", core.display());
+            // Every executable this crate links is a test executable.
+            println!("cargo:rustc-link-arg=/EXPORT:D3D12SDKVersion,DATA");
+            println!("cargo:rustc-link-arg=/EXPORT:D3D12SDKPath,DATA");
+        }
+    }
 }
