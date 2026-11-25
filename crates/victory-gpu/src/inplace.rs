@@ -1060,6 +1060,113 @@ fn real_part(spans: &[(u64, u64, bool)]) -> Vec<String> {
     lines
 }
 
+/// With [`probe_level`] 2: the title's page pool, if its section is made
+/// committed (`VICTORY_POOL_COMMIT=1`), opened as one host heap for a
+/// moment: what the host makes of it, a buffer placed under the title's
+/// longest view of it, 64 KiB the GPU reads there compared with what the
+/// CPU reads at the view, how fast the GPU copies from it into its own
+/// memory, and whether one buffer can be placed over the whole section.
+/// All of it is released again.
+fn section_part() -> Vec<String> {
+    let Some(host) = crate::host::host() else {
+        return Vec::new();
+    };
+    let (section, bytes, view) = {
+        let v = views();
+        let Some(&(section, bytes, _)) = v.sections.iter().filter(|s| s.2).max_by_key(|s| s.1) else {
+            return vec!["the page pool: no committed section (VICTORY_POOL_COMMIT=1 makes it one)".to_owned()];
+        };
+        let view = v.views.iter().filter(|(_, view)| view.1 == section).max_by_key(|(_, view)| view.0).map(|(&at, &(len, _, offset))| (at, len, offset));
+        (section, bytes, view)
+    };
+    let mut lines = Vec::new();
+    // Which sizes the host opens: each of the title's sections, then
+    // committed sections of our own around the 4 GiB line (never touched:
+    // they take no memory, only commit charge, and go again at once).
+    let all: Vec<(usize, u64)> = views().sections.iter().filter(|s| s.2).map(|s| (s.0, s.1)).collect();
+    for (handle, size) in all {
+        lines.push(format!("the title's section of {} MB opened as one heap: {}", size >> 20, hr(&open(&host.device, From::Section(handle)))));
+    }
+    for mb in [4000u64, 4096] {
+        let bytes = mb << 20;
+        let invalid = windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+        // SAFETY: plain section creation, closed below.
+        let handle = unsafe {
+            mem::CreateFileMappingW(invalid, std::ptr::null(), mem::PAGE_READWRITE | mem::SEC_COMMIT, (bytes >> 32) as u32, bytes as u32, std::ptr::null())
+        };
+        if handle.is_null() {
+            lines.push(format!("a committed section of our own, {mb} MB: not made ({})", std::io::Error::last_os_error()));
+            continue;
+        }
+        let opened = open(&host.device, From::Section(handle as usize));
+        let placed = opened.as_ref().ok().map(|heap| hr(&place(&host.device, heap, 0, bytes)));
+        lines.push(format!(
+            "a committed section of our own, {mb} MB, opened as one heap: {}; one buffer over it: {}",
+            hr(&opened),
+            placed.unwrap_or_else(|| "-".to_owned())
+        ));
+        drop(opened);
+        // SAFETY: our own handle.
+        unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
+    }
+    let (set, started) = (working_set_mb(), std::time::Instant::now());
+    let opened = open(&host.device, From::Section(section));
+    lines.push(format!(
+        "the page pool, a section of {} MB, opened as one heap: {}; in {:.1} ms; working set {set} -> {} MB",
+        bytes >> 20,
+        hr(&opened),
+        started.elapsed().as_secs_f64() * 1000.0,
+        working_set_mb()
+    ));
+    let Ok(heap) = opened else {
+        return lines;
+    };
+    lines.push(format!("  the heap: {}", describe(&heap)));
+    let whole = place(&host.device, &heap, 0, bytes);
+    lines.push(format!("  one buffer over the whole section: {}", hr(&whole)));
+    drop(whole);
+    let Some((at, len, offset)) = view else {
+        lines.push("  no view of it mapped yet".to_owned());
+        return lines;
+    };
+    let size = (len as u64).min(64 << 20) & !(K64 as u64 - 1);
+    let placed = place(&host.device, &heap, offset, size.max(K64 as u64));
+    lines.push(format!(
+        "  a buffer of {} KiB placed at the section's offset {offset:#x}, shown by the view at {at:#x} ({} KiB): {}",
+        size >> 10,
+        len >> 10,
+        hr(&placed)
+    ));
+    if let (Ok(buffer), Ok(mut rig)) = (&placed, Rig::new(&host.device)) {
+        let mut before = vec![0u8; K64];
+        crate::host::copy_mapped(before.as_mut_ptr(), at as *const u8, K64, false);
+        let got = rig.fetch(buffer, 0, K64);
+        let mut after = vec![0u8; K64];
+        crate::host::copy_mapped(after.as_mut_ptr(), at as *const u8, K64, false);
+        match got {
+            Ok(got) => {
+                let equal = (0..K64).filter(|&i| got[i] == before[i] || got[i] == after[i]).count();
+                let zeros = got.iter().filter(|&&b| b == 0).count();
+                lines.push(format!(
+                    "  the GPU read 64 KiB of the title's bytes through the section: {equal} of {K64} equal to what the CPU read at the view just before or just after ({zeros} of them zero)"
+                ));
+            }
+            Err(e) => lines.push(format!("  the GPU's read failed: {e}")),
+        }
+        if size >= 1 << 20 {
+            match rig.copy_ms(buffer, size) {
+                Ok(ms) => lines.push(format!(
+                    "  the GPU copied {} MB of it into its own memory in {ms:.2} ms ({:.1} GB/s)",
+                    size >> 20,
+                    size as f64 / 1e6 / ms.max(1e-6)
+                )),
+                Err(e) => lines.push(format!("  the GPU's copy failed: {e}")),
+            }
+        }
+    }
+    lines
+}
+
 /// Called once a second by the thread that submits, before a submission
 /// (`host::sweep`): with [`probe_level`], the probe at the first call, the
 /// census (on a thread of its own: it asks Windows about every copy) 30
@@ -1104,6 +1211,9 @@ pub(crate) fn tick() {
             }
             if which == 0 && probe_level() >= 2 {
                 for line in real_part(&spans) {
+                    tracing::info!("in place probe: {line}");
+                }
+                for line in section_part() {
                     tracing::info!("in place probe: {line}");
                 }
             }

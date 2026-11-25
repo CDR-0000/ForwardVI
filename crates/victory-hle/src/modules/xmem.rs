@@ -35,6 +35,18 @@ use crate::{HleModule, hle_export};
 const MIB: usize = 1 << 20;
 
 /// Whether we run under Wine (its ntdll exports `wine_get_version`).
+/// Whether the title's physical pages are a committed section
+/// (`VICTORY_POOL_COMMIT=1`; off by default): only such a section can be
+/// opened by the GPU as one heap (`victory_gpu` `inplace`), which is the
+/// first step to the GPU reading the title's memory itself instead of
+/// copies of it. It charges the section's bytes to the commit limit at
+/// once (the title asks for about 6 GiB); untouched pages still take no
+/// memory.
+pub(crate) fn pool_commit() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("VICTORY_POOL_COMMIT").is_some_and(|v| v == "1"))
+}
+
 pub(crate) fn on_wine() -> bool {
     static WINE: LazyLock<bool> = LazyLock::new(|| {
         use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
@@ -411,47 +423,63 @@ pub extern "system" fn XMemAllocatePhysicalPages(
     let Some(size) = n.checked_mul(PAGE).filter(|&s| s > 0) else {
         return 0;
     };
-    // A pagefile-backed section of `size` bytes, its pages committed when
-    // first mapped or written (`commit`): the title asks for 6.1
-    // GiB at once, which a busy host often cannot commit (error 1450).
-    // SAFETY: plain section creation.
-    let handle = unsafe {
-        CreateFileMappingW(
-            INVALID_HANDLE_VALUE,
-            std::ptr::null(),
-            // Under Wine a committed section is a sparse file, free until
-            // touched, and committing a reserved one page by page costs a
-            // wineserver request each that scans every range committed so
-            // far: commit it whole there.
-            PAGE_READWRITE | if on_wine() { SEC_COMMIT } else { SEC_RESERVE },
-            (size as u64 >> 32) as u32,
-            size as u32,
-            std::ptr::null(),
-        )
-    };
-    if handle.is_null() {
-        let error = std::io::Error::last_os_error();
-        tracing::warn!(n, %error, "XMemAllocatePhysicalPages failed");
-        // SAFETY: checked non-null.
-        unsafe { count.write(0) };
-        return 0;
+    // Pagefile-backed sections, their pages committed when first mapped or
+    // written (`commit`): the title asks for 6.1 GiB at once, which a busy
+    // host often cannot commit (error 1450). One section, unless the pool
+    // is made committed for the GPU (`pool_commit`): the host opens a
+    // section as a heap only below 4 GiB (4,000 MiB opened, 4,096 refused
+    // with E_INVALIDARG on an RTX 3080 Ti, ForwardVI's probe of 25
+    // November), so the pages are then spread over sections of 3.5 GiB at
+    // most. Mappings already take one view per run of consecutive pages of
+    // one section, so a run that crosses sections is two views; the title
+    // sees its page numbers as before.
+    let committed = on_wine() || pool_commit();
+    let per = if pool_commit() { SECTION_MOST / PAGE } else { n };
+    let mut sections = Vec::new();
+    for from in (0..n).step_by(per.max(1)) {
+        let bytes = (n - from).min(per) * PAGE;
+        // SAFETY: plain section creation.
+        let handle = unsafe {
+            CreateFileMappingW(
+                INVALID_HANDLE_VALUE,
+                std::ptr::null(),
+                // Under Wine a committed section is a sparse file, free until
+                // touched, and committing a reserved one page by page costs a
+                // wineserver request each that scans every range committed so
+                // far: commit it whole there.
+                PAGE_READWRITE | if committed { SEC_COMMIT } else { SEC_RESERVE },
+                (bytes as u64 >> 32) as u32,
+                bytes as u32,
+                std::ptr::null(),
+            )
+        };
+        if handle.is_null() {
+            let error = std::io::Error::last_os_error();
+            tracing::warn!(n, size, %error, "XMemAllocatePhysicalPages failed");
+            // SAFETY: checked non-null.
+            unsafe { count.write(0) };
+            return 0; // (the sections made so far close as they drop)
+        }
+        sections.push((Arc::new(Section(handle)), bytes));
     }
     tracing::debug!(
         n,
+        sections = sections.len(),
         flags = format_args!("{flags:#x}"),
         "XMemAllocatePhysicalPages"
     );
     // For the GPU side's in-place census: only a committed section can be
     // opened as a host heap.
-    victory_gpu::title_memory_section(handle as usize, size as u64, on_wine());
-    let section = Arc::new(Section(handle));
+    for (section, bytes) in &sections {
+        victory_gpu::title_memory_section(section.0 as usize, *bytes as u64, committed);
+    }
     let mut physical = physical();
     let first = physical.next_page;
     physical.next_page += n * FRAMES;
     for index in 0..n {
         let slice = Slice {
-            section: section.clone(),
-            index,
+            section: sections[index / per.max(1)].0.clone(),
+            index: index % per.max(1),
         };
         let number = first + index * FRAMES;
         physical.pages.insert(number, slice);
@@ -460,6 +488,11 @@ pub extern "system" fn XMemAllocatePhysicalPages(
     }
     1
 }
+
+/// The most bytes of one section when the pool is made committed
+/// ([`pool_commit`]): 3.5 GiB, below the host's 4 GiB for a heap opened
+/// on one with room to spare (fewer sections: fewer runs cut in two).
+const SECTION_MOST: usize = 3584 << 20;
 
 /// Page numbers count 4 KiB frames, so a 64 KiB page's is a multiple of
 /// 16: the title keeps them as 21-bit `number >> 4` and rebuilds
@@ -824,7 +857,7 @@ fn map(physical: &mut Physical, base: usize, len: usize, slice: Slice) -> bool {
 
 /// Commits the section pages a view shows (once per page, whichever view).
 fn commit(base: usize, len: usize) -> bool {
-    if on_wine() {
+    if on_wine() || pool_commit() {
         return true; // sections are committed whole there
     }
     // SAFETY: `[base, base + len)` is a view of a reserved section.
