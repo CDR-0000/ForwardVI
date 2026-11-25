@@ -1922,7 +1922,7 @@ mod relay_tests {
 }
 
 /// The most host lists in the air before the flights are settled
-/// (`VICTORY_LATE_WAIT_LISTS`, 256; `=128` is the value before: with the
+/// (`VICTORY_LATE_WAIT_LISTS`, 128 in ForwardVI; `=256` is victory-fork's: with the
 /// relay it stopped the submitting thread twice a frame for 92-103 ms in
 /// all while the card stood idle 64-113 ms a frame, runs 158, 159 and 162;
 /// 32 settled the flights three times a
@@ -1934,7 +1934,7 @@ mod relay_tests {
 fn late_most() -> usize {
     static MOST: OnceLock<usize> = OnceLock::new();
     *MOST.get_or_init(|| {
-        std::env::var("VICTORY_LATE_WAIT_LISTS").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(256).max(1)
+        std::env::var("VICTORY_LATE_WAIT_LISTS").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(128).max(1)
     })
 }
 
