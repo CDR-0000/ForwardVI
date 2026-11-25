@@ -99,12 +99,22 @@ last 30 frames of a run stopped 10-20 seconds into the 3D scene:
 | Starting point (ztrx with the precompile and victory-fork `310c6eb`, default switches) | 903 ms | 1.1 |
 | + work on all cores, texture reads without the mapping lock | 581 ms | 1.7 |
 | + victory-fork's newer work and the copy-back in few writes | 540 ms | 1.9 |
-| + #51, #220 and indirect windows | **253 ms** | **4.0** |
+| + #51, #220 and indirect windows | 253 ms | 4.0 |
+| + the CPU and GPU overlapping (`VICTORY_LATE_WAIT=3`) | **191 ms** | **5.2** |
 
-The GPU's share of a frame went from about 270 ms to 78 ms; most of what is left
-is processor work around each of the frame's 34 submissions, and the card and
-the processor still take turns. Making them overlap without losing what the
-image needs (the relay's problem) is the next step.
+Then buffers of 1 MiB and up were kept in the card's memory (the card finds what
+shaders changed in them, so the CPU takes no snapshot of them and compares
+nothing): in the heavier scenes (3,000+ draws a frame) copying back went from 77
+to 47 ms a frame and the median frame from 315 to 298 ms. The in-game frame
+graph shows about 5 fps (a 200 ms median) in the world.
+
+Where the time goes now: an Nsight Graphics trace of one heavy frame has the GPU
+working about 159 ms of it and its shader cores idle 78% of the time, with no
+single costly shader (the largest job is 10 ms). The GPU is not the limit: the
+processor and the GPU still take turns, the processor waiting for the GPU to
+empty about once a frame and the GPU waiting while the processor prepares. The
+relay, which keeps the GPU fed, was tried again (with and without the card
+buffers) and was not faster, so the next work is the processor's.
 What comes next, and what does not render yet, is in `docs/roadmap.md`.
 
 We might show up on PortWatch VI soon at this rate.
@@ -158,10 +168,22 @@ These draw the same image and make the frame much shorter; set them before `run`
 | `VICTORY_WIDE_BACK=1` | the compare of what shaders wrote on the worker threads |
 | `VICTORY_TEXTURE_NO_WAIT=1` | texture reads do not wait for the mapping lock |
 | `VICTORY_INDIRECT_WINDOW=1` | indirect draws clamped 16-64 records a pass |
+| `VICTORY_LATE_WAIT=3` | the CPU and GPU overlap: submissions go to the GPU without a wait for each |
+| `VICTORY_CARD_BUFFERS_MIN_MB=1` `VICTORY_CARD_BUFFERS_MB=1024` | buffers of 1 MiB and up kept in the GPU's memory, where it finds what shaders changed |
 
-Still being checked: the CPU/GPU overlap (`VICTORY_LATE_WAIT=1..3`, and the relay
-on top of it, `VICTORY_RELAY=2`). They cut frame time further but have lost walls
-and models before.
+Not recommended yet: the relay (`VICTORY_RELAY=2`), which lost walls and models
+before and was not faster in the latest runs, and more than 128 lists in the air
+(`VICTORY_LATE_WAIT_LISTS=256`), which made frames slower.
+
+## Frame times
+
+`VICTORY_FRAME_GRAPH=1` opens a small window beside the game with one bar per
+frame (green up to 100 ms, yellow up to 250, red above), and above it the frames
+a second from the median of the last two seconds, the last frame, the worst 1%
+of the last ten seconds and the draws a frame. `VICTORY_FRAME_LOG=<file>` writes
+every frame's time and draws to a CSV file. Both cost the renderer next to
+nothing (the presenting thread adds two numbers under a lock; the graph has a
+thread of its own).
 
 ## Debugging switches
 
