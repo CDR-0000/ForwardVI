@@ -1799,9 +1799,14 @@ impl State {
             None => (span, per_frame),
         };
         let began = std::time::Instant::now();
-        for (index, write) in due {
+        for (at, (index, write)) in due.iter().copied().enumerate() {
             if SPENT.load(Ordering::Relaxed) >= bytes_at_most || began.elapsed() > span {
                 break;
+            }
+            // The host copies the next slots will make, made ahead on a few
+            // threads (`make_ahead`), while the card has room.
+            if room && at % AHEAD == 0 {
+                make_ahead(&ahead(heap, host, &due[at..(at + AHEAD).min(due.len())]));
             }
             // A placed texture whose memory is not mapped (not streamed in
             // yet, or streamed out again: the heap keeps tens of thousands
@@ -3452,4 +3457,84 @@ pub(crate) fn depth_bounds(list: &HostList, min: f32, max: f32) {
         // SAFETY: an open list on a device that supports depth bounds.
         unsafe { l1.OMSetDepthBounds(min, max) };
     }
+}
+
+/// Slots of the textures pass looked ahead at a time ([`ahead`]).
+const AHEAD: usize = 256;
+
+/// Of `slots` (due in the textures pass), the title textures the pass will
+/// make a host copy of: their memory mapped (and more of it than at the
+/// last look, if not all), a texture the title fills, its host copy not
+/// made yet. Slots looked at again after an upload are left out (most of
+/// them have nothing new). Placed views get their texture object here, as
+/// the pass would.
+fn ahead(heap: &crate::descriptor::Heap, host: &crate::descriptor::host::HostHeap, slots: &[(u32, u64)]) -> Vec<usize> {
+    let mut out = Vec::new();
+    for &(index, _) in slots {
+        if host.texture_slot_checked(index).is_some() {
+            continue;
+        }
+        let Some(view) = heap.handle(index).and_then(crate::descriptor::view) else {
+            continue;
+        };
+        let view = match &view {
+            View::Placed(false, resource, desc) => {
+                let address = u64::from(desc[10]) | u64::from(desc[11]) << 32;
+                let len = crate::resource::placed_bytes(resource).unwrap_or(1);
+                let mapped = crate::texture::mapped_bytes(address as *const u8, len as usize);
+                if mapped == 0 || (mapped < len && mapped <= host.texture_slot_mapped(index)) {
+                    continue;
+                }
+                match crate::descriptor::host::placed_texture(&view) {
+                    Some(view) => view,
+                    None => continue,
+                }
+            }
+            _ => view,
+        };
+        if let View::Shader(resource, _) = view {
+            let resource = resource as This;
+            if crate::resource::buffer_bytes(resource).is_none()
+                && crate::resource::title_fills(resource)
+                && crate::resource::host_waits(resource)
+            {
+                out.push(resource as usize);
+            }
+        }
+    }
+    out
+}
+
+/// Makes the host copies of title textures `resources` on a few threads at
+/// once (`VICTORY_TEXTURE_MAKERS`, half the processor's threads from 2 to
+/// 8 by default; 1: none made ahead, each is made when the pass reaches
+/// it, as before).
+///
+/// Why: a streaming burst made 2,000 to 5,000 host textures one after
+/// another on the title's thread that records the frame, each a creation
+/// the driver takes its time over: 175 ms of a 764 ms frame (ForwardVI's
+/// frame trace of 25 November, after the staging slabs). Each texture's
+/// copy is made under a lock of its own, so different ones can be made at
+/// once; the pass then finds them made.
+fn make_ahead(resources: &[usize]) {
+    static MAKERS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    let makers = *MAKERS.get_or_init(|| {
+        std::env::var("VICTORY_TEXTURE_MAKERS").ok().and_then(|v| v.trim().parse().ok()).unwrap_or_else(|| {
+            std::thread::available_parallelism().map_or(2, |n| (n.get() / 2).clamp(2, 8))
+        })
+    });
+    if makers <= 1 || resources.len() < 2 {
+        return;
+    }
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        for _ in 0..makers.min(resources.len()) {
+            scope.spawn(|| {
+                profile_scope!("host texture: made ahead");
+                while let Some(&resource) = resources.get(next.fetch_add(1, Ordering::Relaxed)) {
+                    let _ = crate::resource::host_copy(resource as This);
+                }
+            });
+        }
+    });
 }
