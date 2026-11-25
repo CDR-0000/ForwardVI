@@ -63,6 +63,10 @@ pub(crate) struct Shader {
     container: Vec<u8>,
     #[cfg(windows)]
     translated: OnceLock<Option<Translated>>,
+    /// The title's program the indirect light's stand-in follows, if this is
+    /// one (`crate::ambient`).
+    #[cfg(windows)]
+    pub(crate) ambient: Option<crate::ambient::Role>,
 }
 
 impl std::fmt::Debug for Shader {
@@ -120,6 +124,8 @@ impl Shader {
             container: bytes.to_vec(),
             #[cfg(windows)]
             translated: OnceLock::new(),
+            #[cfg(windows)]
+            ambient: (stage == "compute").then(|| crate::ambient::role(bytes)).flatten(),
         }
     }
 }

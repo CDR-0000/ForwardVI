@@ -67,6 +67,8 @@ pub mod shader_cache;
 mod memory;
 mod memkind;
 #[cfg(windows)]
+mod ambient;
+#[cfg(windows)]
 mod cardmem;
 #[cfg(windows)]
 mod shadow;
