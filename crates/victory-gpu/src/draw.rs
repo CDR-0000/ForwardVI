@@ -1915,7 +1915,10 @@ impl State {
                     );
                 }
             }
-            let view = heap.handle(index).and_then(|handle| host.mirror(index, handle, true));
+            let view = {
+                profile_scope!("heap textures: make host texture");
+                heap.handle(index).and_then(|handle| host.mirror(index, handle, true))
+            };
             let placed = view.as_ref().and_then(crate::descriptor::host::placed_texture);
             let resource = match placed.as_ref().or(view.as_ref()) {
                 Some(&View::Shader(resource, _)) => resource as This,
@@ -1935,6 +1938,7 @@ impl State {
             // submission that samples it.
             let tabled = crate::texture::is_staged(resource);
             if let Some(view) = &view {
+                profile_scope!("heap textures: stage and record upload");
                 readable(list, sampled.kind, view);
             }
             // A texture view the host refuses removes the device: name it.
