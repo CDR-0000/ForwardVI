@@ -1737,7 +1737,9 @@ impl State {
         if room {
             host.texture_slots_waiting(frame);
         }
-        let (due, census) = host.texture_slots_due(frame, 4096);
+        // 8,192 a pass (it was 4,096): the pass took about 14 ms a world
+        // frame (RTX 3080 Ti), and the queue held 17,000 due and growing.
+        let (due, census) = host.texture_slots_due(frame, 8192);
         HEAP_TEXTURES_WAITING.store(census[0], Ordering::Relaxed);
         for (count, now) in HEAP_TEXTURES_QUEUE.iter().zip(census) {
             count.store(now, Ordering::Relaxed);

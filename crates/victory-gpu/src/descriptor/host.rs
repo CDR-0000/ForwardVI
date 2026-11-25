@@ -564,6 +564,12 @@ impl TextureQueue {
     ///   25,000-40,000 while the textures of the shot on screen waited
     ///   (run 52: 98% of the drawn pixels had no colour texture in the
     ///   first 3D frames).
+    ///
+    /// When there are more than `max`, the slots never looked at keep at
+    /// least half of them: the ones looked at before (8,000-11,000 waiting
+    /// for their memory in the world) took all 4,096 a pass, and slots
+    /// never uploaded waited 600 frames and more (ForwardVI, a world run on
+    /// an RTX 3080 Ti; the textures popped in late or not at all).
     fn due(&self, frame: u64, max: usize) -> Vec<(u32, u64)> {
         let mut again: Vec<(u64, u32, u64)> = Vec::new();
         let mut fresh: Vec<(u64, u32, u64)> = Vec::new();
@@ -575,7 +581,11 @@ impl TextureQueue {
         let newest_first = |a: &(u64, u32, u64), b: &(u64, u32, u64)| b.2.cmp(&a.2);
         again.sort_unstable_by(newest_first);
         fresh.sort_unstable_by(newest_first);
-        let mut order: Vec<(u32, u64)> = again.iter().map(|&(_, index, write)| (index, write)).collect();
+        // The share of each: never-looked-at slots at least half (or all of
+        // them, if fewer), the looked-at ones the rest.
+        let fresh_share = fresh.len().min(max.div_ceil(2));
+        let again_share = again.len().min(max - fresh_share);
+        let mut order: Vec<(u32, u64)> = again[..again_share].iter().map(|&(_, index, write)| (index, write)).collect();
         let (mut new, mut old) = (0, fresh.len());
         while new < old && order.len() < max {
             order.push((fresh[new].1, fresh[new].2));
@@ -3202,6 +3212,38 @@ mod tests {
         q.written(98, 14, 16, false);
         assert!(!q.due(15, 100).iter().any(|d| d.0 == 98));
         assert!(q.due(16, 100).iter().any(|d| d.0 == 98));
+    }
+
+    /// More slots looked at before than a pass takes: the ones never looked
+    /// at still get half the pass, newest and oldest in turns.
+    #[test]
+    fn slots_never_looked_at_keep_half_of_a_full_pass() {
+        let mut q = TextureQueue::default();
+        // 10 slots looked at before (their memory not there yet) ...
+        for i in 0..10u32 {
+            q.written(100 + i, 1, 0, false);
+        }
+        let looked: Vec<(u32, u64)> = q.due(1, 100);
+        for &(index, write) in &looked {
+            q.later(index, write, 1, 1);
+        }
+        // ... and 6 never looked at, written later.
+        for i in 0..6u32 {
+            q.written(200 + i, 2 + u64::from(i), 0, false);
+        }
+        let order: Vec<u32> = q.due(10, 8).into_iter().map(|d| d.0).collect();
+        assert_eq!(order.len(), 8);
+        let fresh: Vec<u32> = order.iter().copied().filter(|&i| i >= 200).collect();
+        assert_eq!(fresh, [205, 200, 204, 201], "half the pass, newest and oldest in turns");
+        assert_eq!(order.iter().filter(|&&i| i < 200).count(), 4);
+        // Fewer never looked at than half: the looked-at ones fill the rest.
+        let order: Vec<u32> = q.due(10, 14).into_iter().map(|d| d.0).collect();
+        assert_eq!(order.iter().filter(|&&i| i >= 200).count(), 6);
+        assert_eq!(order.iter().filter(|&&i| i < 200).count(), 8);
+        // Room for all: every slot, the looked-at ones first, as before.
+        let order: Vec<u32> = q.due(10, 100).into_iter().map(|d| d.0).collect();
+        assert_eq!(order.len(), 16);
+        assert!(order[..10].iter().all(|&i| i < 200));
     }
 
     /// Slots held back for lack of room on the card are not handed out
