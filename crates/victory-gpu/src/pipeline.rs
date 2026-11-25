@@ -766,6 +766,7 @@ mod make;
 #[cfg(windows)]
 pub(crate) fn trim_library() {
     library::trim();
+    library::trim_driver_cache();
 }
 
 /// The pipeline library's part of the report when the host device is

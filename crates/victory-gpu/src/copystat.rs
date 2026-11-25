@@ -687,6 +687,48 @@ fn log_memory_map() {
         started.elapsed().as_millis(),
         text.join("; ")
     );
+    // The mappings at host addresses by what they map: a file's name, or,
+    // for memory no file holds (the pagefile's, the card's mapped for the
+    // processor), the size of the allocation; committed and in memory
+    // (one page in sixteen asked about, as above).
+    {
+        use windows_sys::Win32::System::ProcessStatus::{K32GetMappedFileNameW, K32QueryWorkingSetEx};
+        use windows_sys::Win32::System::Threading::GetCurrentProcess;
+        let mut names: HashMap<usize, String> = HashMap::new();
+        let mut groups: HashMap<String, (u64, u64, u64)> = HashMap::new();
+        for r in regions.iter().filter(|r| r.3 && kind(r) == 8) {
+            let name = names
+                .entry(r.0)
+                .or_insert_with(|| {
+                    let mut buffer = [0u16; 520];
+                    // SAFETY: our own process; the buffer holds that many characters.
+                    let n = unsafe { K32GetMappedFileNameW(GetCurrentProcess(), r.0 as *const _, buffer.as_mut_ptr(), buffer.len() as u32) };
+                    if n == 0 {
+                        format!("no file, allocations of {:.1} MB", whole.get(&r.0).copied().unwrap_or(0) as f64 / (1 << 20) as f64)
+                    } else {
+                        let full = String::from_utf16_lossy(&buffer[..n as usize]);
+                        full.rsplit('\\').next().unwrap_or(&full).to_owned()
+                    }
+                })
+                .clone();
+            let group = groups.entry(name).or_default();
+            group.0 += r.2 as u64;
+            let mut asked: Vec<[usize; 2]> = (0..r.2).step_by(STEP).map(|o| [r.1 + o, 0]).collect();
+            // SAFETY: our own process; `asked` holds that many entries of two words each.
+            if unsafe { K32QueryWorkingSetEx(GetCurrentProcess(), asked.as_mut_ptr().cast(), (asked.len() * 16) as u32) } != 0 {
+                group.1 += asked.iter().filter(|a| a[1] & 1 != 0).count() as u64 * STEP as u64;
+            }
+            group.2 += 1;
+        }
+        let mut groups: Vec<_> = groups.into_iter().collect();
+        groups.sort_by_key(|g| std::cmp::Reverse(g.1.1));
+        let text: Vec<String> = groups
+            .iter()
+            .take(15)
+            .map(|(name, (bytes, present, n))| format!("{name}: {n} regions, {} MB ({} MB in memory)", bytes >> 20, present >> 20))
+            .collect();
+        tracing::info!("memory map, mappings at host addresses by what they map: {}", text.join("; "));
+    }
     // The private allocations the kinds above leave as "other" (and the
     // write-combined ones), grouped by their size: the sizes name their
     // owners (the pipeline library's file to the byte, a snapshot buffer
