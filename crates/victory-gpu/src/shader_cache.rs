@@ -144,14 +144,14 @@ pub(crate) fn host_shader(container: &[u8]) -> Result<HostShader, String> {
     result
 }
 
-fn target() -> [u32; 2] {
+fn target() -> [u32; 4] {
     // The view heap's null slot is part of the key: probe it before reading
     // it, so a title run and the offline precompile compute the same key.
+    // With it the translator's other host settings: the widest wave, where
+    // raw view twins start (none here), and the AMD RDNA forms (off on
+    // NVIDIA).
     crate::descriptor::host::probe_view_limit();
-    [
-        victory_shader::emit::host_max_wave(),
-        victory_shader::emit::view_heap_limit(),
-    ]
+    victory_shader::emit::host_settings()
 }
 
 /// DXBC's declared size excludes trailing allocation padding. Keep the title's
@@ -200,7 +200,7 @@ fn lookup(cache: &Cache, container: &[u8]) -> (Translation, CacheStatus) {
     (Err(error.clone()), CacheStatus::Failed(error))
 }
 
-fn shader_key(build: &[u8; 32], [wave, view_limit]: [u32; 2], container: &[u8]) -> CacheKey {
+fn shader_key(build: &[u8; 32], [wave, view_limit, raw_views, rdna]: [u32; 4], container: &[u8]) -> CacheKey {
     // Bump the format version if the serialized HostShader or refusal changes.
     CacheKey::from_parts(
         "shader.dxil",
@@ -209,6 +209,8 @@ fn shader_key(build: &[u8; 32], [wave, view_limit]: [u32; 2], container: &[u8]) 
             build,
             &wave.to_le_bytes(),
             &view_limit.to_le_bytes(),
+            &raw_views.to_le_bytes(),
+            &rdna.to_le_bytes(),
             container,
         ],
     )
@@ -217,7 +219,7 @@ fn shader_key(build: &[u8; 32], [wave, view_limit]: [u32; 2], container: &[u8]) 
 fn cached(
     cache: &Cache,
     build: &[u8; 32],
-    target: [u32; 2],
+    target: [u32; 4],
     container: &[u8],
     translate: impl FnOnce(&[u8]) -> Result<HostShader, ShaderError>,
     still_current: impl FnOnce() -> bool,
@@ -482,13 +484,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cache = Cache::open(dir.path()).unwrap();
         let build = [7u8; 32];
-        let target = [32, 999_999];
+        let target = [32, 999_999, 0, 0];
         let container = b"a console container".as_slice();
         let translate = |_: &[u8]| Ok(shader());
         let entry = || cached(&cache, &build, target, container, translate, || true);
         assert_eq!(entry(), (Ok(shader()), CacheStatus::Stored));
         assert_eq!(entry(), (Ok(shader()), CacheStatus::Hit));
-        for other_target in [[64, target[1]], [target[0], 0]] {
+        for other_target in [[64, target[1], 0, 0], [target[0], 0, 0, 0], [target[0], target[1], 0, 1]] {
             assert_eq!(
                 cached(&cache, &build, other_target, container, translate, || true),
                 (Ok(shader()), CacheStatus::Stored)
@@ -512,7 +514,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cache = Cache::open(dir.path()).unwrap();
         let build = [7u8; 32];
-        let target = [32, 999_999];
+        let target = [32, 999_999, 0, 0];
         let error = || ShaderError::Unsupported {
             offset: 4,
             what: "test opcode",
@@ -556,7 +558,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cache = Cache::open(dir.path()).unwrap();
         let build = [7u8; 32];
-        let target = [32, 999_999];
+        let target = [32, 999_999, 0, 0];
         let container = b"shader";
         std::fs::create_dir_all(cache.path_for(&shader_key(&build, target, container))).unwrap();
         let (translated, status) =
