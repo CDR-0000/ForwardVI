@@ -24,6 +24,9 @@ How changes get in:
   ztrx and VItoriaBr (merged or still open) are brought in when they hold up under
   the two rules above, with credit to their authors.
 
+Pull requests and issues are open to prior contributors. A performance change
+needs its before/after measurement and screenshots showing the image unchanged.
+
 ## Built upon
 
 ForwardVI is a fork of [**ztrx**](https://github.com/Zettrox/ztrx) (Zettrox),
@@ -40,6 +43,15 @@ On top of ztrx so far:
   GPU pipeline library before you play, so the game no longer compiles them while
   it runs. On an RTX 3080 Ti the first full precompile took about 8 minutes and
   built about 23,000 pipelines; loading into the world was much faster afterwards.
+- **victory-fork's newer work** up to `310c6eb`: the depth bounds test (the first
+  room lit by its lamp), fixes to how textures picked by index are uploaded (the
+  room's walls and the characters' textures), and the AMD view-heap clamp.
+- **Defaults that draw the correct image.** victory-fork turned on its fast
+  modes by default (the relay, wide copy-back, card buffer copies from 1 MiB);
+  they lost walls and models in the first room
+  ([fxceless/victory-fork#168](https://github.com/fxceless/victory-fork/issues/168)).
+  ForwardVI leaves them off until they draw the same image; each still turns on
+  with its switch for measuring.
 
 ## Status (2026-11-25)
 
@@ -83,10 +95,11 @@ and saves in folders you choose (`-Cache`, `-Data`). Controller: XInput pads (a
 DualShock/DualSense through DS4Windows works). With no pad connected the keyboard
 acts as one while the game window has focus.
 
-## Faster settings (optional)
+## Faster settings (not yet correct)
 
 `VICTORY_RELAY=2`, or `VICTORY_LATE_WAIT=3 VICTORY_WIDE_BACK=1`, cut frame time
-on the test machines.
+by about 40%, but they currently lose walls and models. Making them draw the
+correct image is ForwardVI's first target.
 
 ## Debugging switches
 
