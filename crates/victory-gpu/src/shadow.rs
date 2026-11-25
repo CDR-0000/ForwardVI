@@ -990,7 +990,17 @@ fn workers() -> &'static Workers {
         more: std::sync::Condvar::new(),
     });
     STARTED.call_once(|| {
-        let n = std::thread::available_parallelism().map_or(4, |n| n.get() / 4).clamp(2, 6);
+        // A quarter of the logical cores, 2 to 6; `VICTORY_WIDE_THREADS`
+        // sets it (2 to 12). Half (8 of 16) made the submission's parallel
+        // texture refreshes slower, not faster: 73 ms a frame against 36,
+        // each refresh 0.32 ms against 0.23 (RTX 3080 Ti / 7800X3D).
+        let n = std::env::var("VICTORY_WIDE_THREADS")
+            .ok()
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .map_or_else(
+                || std::thread::available_parallelism().map_or(4, |n| n.get() / 4).clamp(2, 6),
+                |n| n.clamp(2, 12),
+            );
         for i in 0..n {
             let _ = std::thread::Builder::new().name(format!("victory-wide-{i}")).spawn(move || {
                 let workers = WORKERS.get().expect("made above");

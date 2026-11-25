@@ -5274,7 +5274,11 @@ impl HostList {
                 }
                 Step::Texture(staging) => {
                     if batch.texture_due(staging) {
-                        staging.refresh();
+                        if wide_textures() {
+                            batch.pending.push(staging.clone());
+                        } else {
+                            staging.refresh();
+                        }
                     }
                     continue;
                 }
@@ -5320,6 +5324,29 @@ struct Batch {
     index: std::collections::HashMap<usize, usize>,
     /// Staging buffers (by address) refreshed since the last title write.
     textures: std::collections::HashSet<usize>,
+    /// With [`wide_textures`]: textures due, refreshed together (several at
+    /// a time) at the next flush, before a step that writes title memory or
+    /// the lists run, as each was refreshed in its place before.
+    pending: Vec<std::sync::Arc<crate::texture::Staging>>,
+}
+
+/// Whether a submission's texture refreshes run on several threads
+/// (`VICTORY_WIDE_TEXTURES=1`). Each refresh reads its texture's title
+/// memory (under the shared read side of the mapping lock) and writes its own
+/// staging buffer, with a per-thread read buffer: nothing of another's. They
+/// were ForwardVI's biggest piece of submission work on the submitting thread
+/// (about 450 a world frame, 90-160 ms, RTX 3080 Ti / Ryzen 7 7800X3D).
+fn wide_textures() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("VICTORY_WIDE_TEXTURES").is_some_and(|v| v == "1"))
+}
+
+impl Drop for Batch {
+    /// Textures still pending are refreshed (every submission flushes before
+    /// its lists run; this is the net under that).
+    fn drop(&mut self) {
+        self.refresh_textures();
+    }
 }
 
 impl Batch {
@@ -5376,7 +5403,22 @@ impl Batch {
         self.textures.clear();
     }
 
+    /// Refreshes the textures [`wide_textures`] left pending, several at a
+    /// time (the submitting thread takes part).
+    fn refresh_textures(&mut self) {
+        if self.pending.is_empty() {
+            return;
+        }
+        profile_scope!("texture refreshes (parallel)");
+        let jobs: Vec<Box<dyn FnOnce() + Send>> = self
+            .pending
+            .drain(..)
+            .map(|staging| Box::new(move || staging.refresh()) as Box<dyn FnOnce() + Send>)
+            .collect();
+        crate::shadow::wide_run(jobs);
+    }
     fn flush(&mut self) {
+        self.refresh_textures();
         profile_scope!("refresh copies");
         self.index.clear();
         // One write-watch asking for the copies that lie close together,
