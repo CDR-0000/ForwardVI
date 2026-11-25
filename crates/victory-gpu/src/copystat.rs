@@ -173,18 +173,22 @@ static WAITS_BY_WORK: Mutex<Option<HashMap<String, (u64, u64)>>> = Mutex::new(No
 
 /// With `VICTORY_GPU_TIMING`: the commands' time on the card since the last
 /// line by what they ran (a pipeline, or the kind of command): how many,
-/// their microseconds, and the longest one's.
-static COMMANDS_BY_WORK: Mutex<Option<HashMap<String, (u64, u64, u64)>>> = Mutex::new(None);
+/// their microseconds, the longest one's, and the longest one's note (its
+/// size: group counts and group size for a dispatch).
+static COMMANDS_BY_WORK: Mutex<Option<HashMap<String, (u64, u64, u64, String)>>> = Mutex::new(None);
 
 /// A command took `ms` on the card (timing run). `op` is its note: the
 /// kind and size first, then the pipeline in brackets, then what it binds.
 pub(crate) fn command_took(op: &str, ms: f64) {
     let us = (ms * 1e3) as u64;
     let mut by = COMMANDS_BY_WORK.lock().unwrap_or_else(|e| e.into_inner());
-    let e = by.get_or_insert_with(HashMap::new).entry(command_key(op)).or_insert((0, 0, 0));
+    let e = by.get_or_insert_with(HashMap::new).entry(command_key(op)).or_insert((0, 0, 0, String::new()));
     e.0 += 1;
     e.1 += us;
-    e.2 = e.2.max(us);
+    if us >= e.2 {
+        e.2 = us;
+        e.3 = op.split(" | ").next().unwrap_or(op).chars().take(300).collect();
+    }
 }
 
 /// What a command's note is summed under: its pipeline (`[compute ...]`,
@@ -1209,14 +1213,14 @@ pub(crate) fn log(frames: f64) {
     }
     let by = COMMANDS_BY_WORK.lock().unwrap_or_else(|e| e.into_inner()).take();
     let mut by: Vec<_> = by.into_iter().flatten().collect();
-    by.sort_by_key(|&(_, (_, us, _))| std::cmp::Reverse(us));
+    by.sort_by_key(|(_, (_, us, _, _))| std::cmp::Reverse(*us));
     // All of them together, and by their first word: the forty lines below
     // are the heaviest only (100 of 226 ms waited in run 102), and what the
     // commands do not account for is the layer's own lists (the card
     // copies' passes, preludes) and the waits themselves.
     if !by.is_empty() {
         let mut kinds: Vec<(String, u64, u64)> = Vec::new();
-        for (what, (n, us, _)) in &by {
+        for (what, (n, us, _, _)) in &by {
             let word = what.split(' ').next().unwrap_or("").to_owned();
             match kinds.iter_mut().find(|k| k.0 == word) {
                 Some(k) => (k.1, k.2) = (k.1 + n, k.2 + us),
@@ -1234,9 +1238,9 @@ pub(crate) fn log(frames: f64) {
             text.join(", ")
         );
     }
-    for (what, (n, us, longest)) in by.into_iter().take(40) {
+    for (what, (n, us, longest, note)) in by.into_iter().take(40) {
         tracing::info!(
-            "  the card's time by command (timing run): {:.2} ms a frame in {:.1} commands a frame, the longest {:.2} ms: {what}",
+            "  the card's time by command (timing run): {:.2} ms a frame in {:.1} commands a frame, the longest {:.2} ms: {what}; the longest was: {note}",
             us as f64 / 1e3 / frames,
             n as f64 / frames,
             longest as f64 / 1e3

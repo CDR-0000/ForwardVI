@@ -132,6 +132,11 @@ pub(crate) struct Translated {
     /// Whether the shader's code can store to buffer memory ([`stores`]);
     /// true when its code is not known.
     pub(crate) stores: bool,
+    /// A compute shader's thread-group size (`numthreads`) and whether it
+    /// runs 64 lanes a wave; zero for other stages. For the timing run's
+    /// notes: how much parallel work a dispatch gives the card.
+    pub(crate) threads: [u32; 3],
+    pub(crate) wave64: bool,
 }
 
 #[cfg(windows)]
@@ -190,6 +195,13 @@ fn translate(container: &[u8]) -> Result<Translated, String> {
     };
     let host = crate::shader_cache::host_shader(container)?;
     let stores = programs.is_empty() || programs.iter().any(stores);
+    let (threads, wave64) = programs
+        .iter()
+        .find_map(|p| match &p.io {
+            victory_shader::native::StageIo::Cs(io) => Some((io.threads, p.wave64)),
+            _ => None,
+        })
+        .unwrap_or(([0; 3], false));
     let used = programs
         .into_iter()
         .find(|p| {
@@ -200,7 +212,7 @@ fn translate(container: &[u8]) -> Result<Translated, String> {
         })
         .map(|p| p.used)
         .unwrap_or_default();
-    Ok(Translated { host, used, stores })
+    Ok(Translated { host, used, stores, threads, wave64 })
 }
 
 /// The compute pipelines of the console's ray-tracing structure builder

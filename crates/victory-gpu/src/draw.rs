@@ -2040,6 +2040,12 @@ impl State {
             return kind;
         };
         let mut text = format!("{kind} {}", p.name);
+        // A dispatch's group size: with its group count, how many threads it
+        // gives the card (the timing run's longest commands).
+        if compute && let Some(t) = p.stages.first().map(|s| s.translated()) {
+            let [x, y, z] = t.threads;
+            let _ = write!(text, " threads {x}x{y}x{z} wave{}", if t.wave64 { 64 } else { 32 });
+        }
         // What it draws into (a dispatch writes through its views below).
         if !compute {
             let described = |t: usize| {
