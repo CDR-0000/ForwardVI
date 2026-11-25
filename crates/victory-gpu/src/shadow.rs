@@ -77,6 +77,9 @@ pub(crate) struct Shadow {
     /// and the bytes from the buffer's first byte to `start` (the heap
     /// begins on a 64 KiB line; a title buffer need not).
     place: Option<(windows::Win32::Graphics::Direct3D12::ID3D12Heap, u64)>,
+    /// For the frame trace: what kind of memory this copies, plus one
+    /// (0: not looked at yet; [`Shadow::kind`]).
+    kind: AtomicU8,
 }
 
 /// What a copy in the card's memory ([`cards`]) has beside the buffer
@@ -2367,7 +2370,43 @@ impl Shadow {
             card: None,
             window: false,
             place: None,
+            kind: AtomicU8::new(0),
         }
+    }
+
+    /// For the frame trace: a title buffer's copy or a window's, and what
+    /// it copies: in place, kept in the card's memory, private memory (not
+    /// a view of the physical pages), one run of one section of them,
+    /// scattered pages, or views with holes. Looked at once.
+    #[cfg(feature = "profile")]
+    fn kind(&self) -> &'static str {
+        const NAMES: [&str; 12] = [
+            "buffer card", "buffer private", "buffer run", "buffer scattered", "buffer holes",
+            "window card", "window private", "window run", "window scattered", "window holes",
+            "buffer in place", "window in place",
+        ];
+        let known = self.kind.load(Ordering::Relaxed);
+        let k = if known != 0 {
+            known - 1
+        } else {
+            let of = if self.place.is_some() {
+                10 + u8::from(self.window)
+            } else {
+                (if self.card.is_some() {
+                    0
+                } else {
+                    match crate::inplace::cover(self.start as usize, self.len as usize) {
+                        crate::inplace::Cover::None => 1,
+                        crate::inplace::Cover::Run(..) => 2,
+                        crate::inplace::Cover::Scattered => 3,
+                        crate::inplace::Cover::Holes => 4,
+                    }
+                }) + if self.window { 5 } else { 0 }
+            };
+            self.kind.store(of + 1, Ordering::Relaxed);
+            of
+        };
+        NAMES[k as usize]
     }
 
     /// `[address, address + len)` cut to the buffer, as offsets in the copy.
@@ -2520,13 +2559,21 @@ impl Shadow {
     /// union of a submission's ranges, each byte once, then calls
     /// [`Shadow::copy_back_done`].
     pub(crate) fn copy_back(&self, address: usize, len: usize) -> usize {
-        profile_scope!("compare and copy back");
         self.copy_back_with(address, len, None)
     }
 
     /// [`Shadow::copy_back`]; `found`, if given, is the pieces of the range
     /// that differ from the snapshot, found beforehand ([`find_all`]).
     pub(crate) fn copy_back_with(&self, address: usize, len: usize, found: Option<Vec<(usize, usize)>>) -> usize {
+        #[cfg(feature = "profile")]
+        let _profile_scope = tracing::span!(
+            target: "profile",
+            tracing::Level::INFO,
+            "compare and copy back",
+            kind = self.kind(),
+            kb = (len >> 10) as u64
+        )
+        .entered();
         if self.place.is_some() {
             return 0;
         }
@@ -2977,7 +3024,16 @@ impl Shadow {
     /// since it was last copied (all of it if the memory is not
     /// write-watched). Returns the bytes copied.
     pub(crate) fn update(&self, address: usize, len: usize) -> usize {
-        profile_scope!("copy refresh: one copy");
+        // With what it copies, for the frame report's split by kind.
+        #[cfg(feature = "profile")]
+        let _profile_scope = tracing::span!(
+            target: "profile",
+            tracing::Level::INFO,
+            "copy refresh: one copy",
+            kind = self.kind(),
+            kb = (len >> 10) as u64
+        )
+        .entered();
         // In place: the card reads title memory itself.
         if self.place.is_some() {
             return 0;

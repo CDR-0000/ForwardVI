@@ -28,6 +28,25 @@ GPU does about 78 ms of it, so the processor work around each of the frame's
    draws a few garbage indirect records (all ones, 16,777,216 vertices) that
    the budget cuts off only after several.
 
+5. **Zero-copy: tried, not the way (25 November).** The GPU reading title
+   memory itself instead of copies. What was measured:
+   - The page pool can be opened by the GPU only as committed sections below
+     4 GiB (`VICTORY_POOL_COMMIT=1` splits it; 4,000 MiB opened, 4,096 refused).
+     Opening a section keeps all of it in memory, and the sections opened
+     stayed committed after the process ended (about 25 GB until a restart).
+   - The title maps the pool as some 65,000 single 64 KiB pages: one placed
+     buffer covers only the buffers on one run of a section, about 3 ms a frame
+     of refreshes. The rest is private memory and windows with holes.
+   - Private memory in place (`VICTORY_INPLACE=2`, writes declared to the
+     flights): 3,534 buffers and 80 windows moved, their ~70 ms of refreshes
+     went, but the GPU read them over PCIe at every use: GPU work 83 -> 192 ms
+     a frame, median frame 259 -> 398 ms, streaming slower.
+   - Copies overlap little (1.07-1.10x of the title memory they cover).
+   So the copies stay in the card's memory; what is left is their cost on the
+   processor: per profile run (`copy refresh: one copy` by kind), about 3,500
+   refreshes a frame of small private buffers (~70 ms across threads, ~20 us
+   each for 60 MB) and ~850 of windows with holes (~64 ms).
+
 Then: a GPU trace in Nsight Graphics (`nsight.bat`, its own cache folder; see
 `docs/profiling.md`) once the processor side is near the GPU's time.
 
