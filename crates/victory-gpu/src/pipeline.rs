@@ -710,6 +710,8 @@ fn read_stream(
         };
         at += size;
     }
+    #[cfg(windows)]
+    graphics.apply_integer_blend_bypass();
     (shaders, graphics)
 }
 
