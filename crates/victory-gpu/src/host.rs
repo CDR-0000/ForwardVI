@@ -541,10 +541,18 @@ pub(crate) fn references(object: &impl Interface) -> u32 {
 /// host copies of textures the title fills).
 /// `VICTORY_SWEEP=0` keeps everything, as before.
 fn sweep() {
-    // The in-place probe and census, if asked for (`VICTORY_INPLACE_PROBE`).
-    crate::inplace::tick();
-    // Reads of the title's memory on the card (`VICTORY_CARD_MEMORY`).
-    crate::cardmem::say();
+    // Once a second, whatever the sweep: the in-place probe and census, if
+    // asked for (`VICTORY_INPLACE_PROBE`), and the reads of the title's
+    // memory on the card (`VICTORY_CARD_MEMORY`). (Called every submission,
+    // they wrote their lines dozens of times a millisecond.)
+    static SAID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let said = SAID.load(Ordering::Relaxed);
+    if now_ms() >= said + 1000
+        && SAID.compare_exchange(said, now_ms(), Ordering::Relaxed, Ordering::Relaxed).is_ok()
+    {
+        crate::inplace::tick();
+        crate::cardmem::say();
+    }
     static ON: OnceLock<bool> = OnceLock::new();
     if !*ON.get_or_init(|| std::env::var_os("VICTORY_SWEEP").is_none_or(|v| v != "0")) {
         return;

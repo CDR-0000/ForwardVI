@@ -134,7 +134,6 @@ pub extern "system" fn XMemVirtualAlloc(
             && asked & PAGE_WRITECOMBINE_ASKED != 0
             && let Some(at) = victory_gpu::title_card_memory(size, lowest, highest)
         {
-            victory_gpu::title_memory_kind(at, size, "virtual", u64::from(asked));
             return at as *mut c_void;
         }
     }
@@ -186,9 +185,6 @@ pub extern "system" fn XMemVirtualAlloc(
                 "XMemVirtualAlloc refused"
             );
         }
-    } else {
-        // As asked, console bits and all (the frame trace's census).
-        victory_gpu::title_memory_kind(at as usize, size, "virtual", u64::from(asked));
     }
     if base.is_null() {
         tracing::debug!(
@@ -330,14 +326,11 @@ pub extern "system" fn XMemAlloc(size: usize, attributes: u64) -> *mut c_void {
             alloc(size, attributes)
         }
     };
-    // The memory type (bits 29-32) as asked, for the frame trace's census.
-    victory_gpu::title_memory_kind(at as usize, size, "alloc", attributes >> 29 & 0xf);
     at
 }
 
 /// See [`XMemAlloc`].
 pub extern "system" fn XMemFree(address: *mut c_void, attributes: u64) {
-    victory_gpu::title_memory_kind_gone(address as usize);
     match hooks()[1] {
         0 => XMemFreeDefault(address, attributes),
         hook => {
