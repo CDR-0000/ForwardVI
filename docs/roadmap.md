@@ -51,4 +51,10 @@ leave this file for the commit history.
   (`slow-pipelines.txt`) first, so they do not finish last; try batches
   smaller than 40 per process (each new process sets up a device and loads
   translations, so measure).
-- **Upscaler mode**: `run.bat opti` (Series S 720p, OptiScaler) is untried.
+- **Upscaler mode** (`run.bat opti`, Series S 720p, OptiScaler): the first run
+  (OptiScaler 0.9.5) sat at the start screens for the 35 s it was given; the
+  redirect could not load the PC FidelityFX DLL: that release has no
+  `amd_fidelityfx_upscaler_dx12.dll`, and the fallback name
+  `amd_fidelityfx_dx12.dll` was not there either. Find which file the release
+  ships (or take one from a PC game) and point VICTORY_FSR_DLL at it; DLSS
+  also needs `nvngx_dlss.dll` beside OptiScaler.
