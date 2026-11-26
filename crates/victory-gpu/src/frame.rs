@@ -84,6 +84,12 @@ pub(crate) fn current() -> u64 {
     FRAME.load(Ordering::Relaxed)
 }
 
+/// A frame begins without a frame wait (`crate::testbed`, which has none).
+#[cfg(windows)]
+pub(crate) fn begin() {
+    FRAME.fetch_add(1, Ordering::Relaxed);
+}
+
 /// For tests of what is done once a frame.
 #[cfg(test)]
 pub(crate) fn test_advance() {

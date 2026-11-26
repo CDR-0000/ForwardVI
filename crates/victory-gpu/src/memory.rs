@@ -211,6 +211,20 @@ unsafe impl Send for Memory {}
 
 static MEMORY: Mutex<Option<Memory>> = Mutex::new(None);
 
+/// Where shaders reach title memory `address` by address: the copy the
+/// directory gives its page and the byte offset in that copy's buffer
+/// (`crate::testbed`). None if the page has no place.
+#[cfg(windows)]
+pub(crate) fn place_of(address: u64) -> Option<(Arc<Shadow>, u64)> {
+    let guard = MEMORY.lock().unwrap_or_else(|e| e.into_inner());
+    let m = guard.as_ref()?;
+    let page = address / PAGE;
+    let n = m.copy_of(page)?;
+    // SAFETY: an entry of the directory, under the mutex.
+    let offset = u64::from(unsafe { m.entry(page).add(1).read_volatile() });
+    Some((m.copies.get(n)?.clone(), offset + address % PAGE))
+}
+
 /// What a draw binds.
 pub(crate) struct Ready {
     pub(crate) directory: u64,

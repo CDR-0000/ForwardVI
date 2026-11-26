@@ -1585,6 +1585,18 @@ fn tagged_record(handle: u64, tag: u32) -> Option<RtvRecord> {
 }
 
 /// Device method.
+/// A heap's interface id (`crate::testbed`).
+pub(crate) fn heap_iid() -> &'static Iid {
+    &HEAP_IIDS[0]
+}
+
+impl HeapDesc {
+    /// A shader-visible view heap of `count` slots (`crate::testbed`).
+    pub(crate) fn visible_views(count: u32) -> Self {
+        Self { kind: VIEWS_KIND, count, flags: SHADER_VISIBLE, nodes: 0 }
+    }
+}
+
 pub(crate) extern "system" fn create_heap(
     _: This,
     desc_ptr: *const HeapDesc,

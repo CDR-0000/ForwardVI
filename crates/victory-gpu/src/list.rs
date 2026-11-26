@@ -515,6 +515,14 @@ pub(crate) extern "system" fn create_allocator(
 }
 
 /// Lists start open, as in D3D12.
+/// The allocator's and a graphics list's interface ids (`crate::testbed`).
+pub(crate) fn allocator_iid() -> &'static Iid {
+    &ALLOCATOR_IIDS[0]
+}
+pub(crate) fn list_iid() -> &'static Iid {
+    &LIST_IIDS[1]
+}
+
 pub(crate) extern "system" fn create_list(
     _: This,
     _nodes: u32,

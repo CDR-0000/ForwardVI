@@ -74,6 +74,8 @@ mod memory;
 mod shadow;
 #[cfg(windows)]
 mod tiles;
+#[cfg(windows)]
+pub mod testbed;
 pub mod signature;
 mod switch;
 #[cfg(all(windows, feature = "diagnostics"))]

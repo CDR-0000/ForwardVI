@@ -88,6 +88,11 @@ const LEVEL_IIDS: [Iid; 9] = [
     ),
 ];
 
+/// `ID3D12Device11`, as the title creates its device (`crate::testbed`).
+pub(crate) fn newest_iid() -> &'static Iid {
+    &LEVEL_IIDS[8]
+}
+
 /// Whether `iid` names the device: its first interface or a newer level.
 pub(crate) fn is_device(iid: *const Iid) -> bool {
     object::is(iid, &[IID]) || object::is(iid, &LEVEL_IIDS)
