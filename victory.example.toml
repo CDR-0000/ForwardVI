@@ -1,4 +1,5 @@
-# Copy to `victory.toml` (git-ignored) and point it at YOUR files.
+# Copy to `victory.toml` (git-ignored) and point it at YOUR files; build.bat makes
+# it from this file the first time and asks for the game's exe.
 # Every path must be OUTSIDE the repository; the tools refuse otherwise.
 # Environment variables (shown below) take precedence over this file.
 # VICTORY_CONFIG selects a different config file.
@@ -6,6 +7,10 @@
 [paths]
 # Your own dump of the title.     env: VICTORY_GAME_DIR
 game_dir = 'D:\victory-data\game'
+
+# The title's exe, a file name in game_dir (build.bat asks for both).
+# env: VICTORY_GAME_EXE
+# game_exe = 'game.exe'
 
 # Derived data. Default: %LOCALAPPDATA%\victory\cache.   env: VICTORY_CACHE_DIR
 # cache_dir = 'D:\victory-data\cache'

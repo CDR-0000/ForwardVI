@@ -17,10 +17,53 @@ own work on top:
   and add frame generation.
 - **The D3D12 Agility SDK runtime** for Windows 10 (`cargo xtask agility`).
 
+- **Card memory without banding**: fills out of the title's memory on the card
+  are copied by the processor when a frame is submitted, not by the card when it
+  runs (the card found the next frame's bytes there: banding and ghosting).
+- **Movie planes** (from codec-d/cool_fox): each frame uploads the video's planes
+  from upload memory of its own, so the intro movie does not stutter.
+
 The goal now: a steady frame rate on NVIDIA at 1080p, measured with Nsight.
-The upstream description follows.
 
 **This repository contains no game files, code or assets.** You need your own copy.
+
+## Getting it running
+
+You need Windows 10 or 11 x64, a CPU with AVX2, a Direct3D 12 GPU with shader
+model 6.6 and mesh shaders (an NVIDIA RTX card is what this fork is tested on),
+[Rust](https://rustup.rs) (the toolchain is pinned, rustup fetches it), the
+Visual Studio Build Tools (MSVC and a Windows SDK), and your own dump of the title.
+Resizable BAR on in the BIOS helps (card memory); without it the game still runs.
+
+1. **`build.bat`**: the first time it asks for the game:
+
+   ```
+   Please enter complete path of folder including the exe (for example: D:/folder/app.exe):
+   ```
+
+   It splits the answer into the game's folder and exe, saves both in
+   `victory.toml` (made from `victory.example.toml`; every script reads them
+   from there), then builds `target\release\victory.exe`. Run it again after
+   every update.
+2. **`precompile.bat`**: translates every shader into the cache (minutes, once per
+   update of the translator) and makes the driver's pipelines of every pipeline
+   earlier runs created (each run adds the new ones; long the first time, and it
+   goes on where it stopped if you close it).
+3. **`run.bat`**: plays at 1080p. A second window shows the log as it is written.
+   - `run.bat 4k`: the console's 4K mode.
+   - `run.bat opti`: the title's Series S mode (1280x720 upscaled to 1080p) with
+     [OptiScaler](https://github.com/optiscaler/OptiScaler) taking over the
+     upscaler and adding frame generation. Extract an OptiScaler release into an
+     `OptiScaler` folder beside this one, or set `OPTISCALER_DIR`.
+   - `run.bat 1080p "NAME=value"`: one more `VICTORY_...` switch for a test run.
+
+The game's switches are in `tools\settings.cmd`. The cache defaults to
+`%LOCALAPPDATA%\victory\cache` and the logs go to a `traces` folder beside it
+(`cache_dir` in `victory.toml` moves both). On **Windows 10**, run
+`cargo xtask agility` once before `build.bat`: it fetches Microsoft's D3D12 Agility
+SDK runtime (hash-checked) beside the exe; Windows 11 needs nothing.
+
+The upstream description follows.
 
 ---
 

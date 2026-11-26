@@ -15,6 +15,9 @@ use crate::policy::ensure_outside_repo;
 pub struct Config {
     /// The user's dump of the title.
     pub game_dir: Option<PathBuf>,
+    /// The title's executable, a file name in `game_dir` (`build.bat` asks
+    /// for it with the folder; the run scripts start it).
+    pub game_exe: Option<PathBuf>,
     /// Root for all derived data. Always outside the repository.
     pub cache_dir: PathBuf,
     /// What titles write and must keep (persistent local storage). Never
@@ -37,6 +40,7 @@ struct FileConfig {
 #[serde(deny_unknown_fields)]
 struct FilePaths {
     game_dir: Option<PathBuf>,
+    game_exe: Option<PathBuf>,
     cache_dir: Option<PathBuf>,
     data_dir: Option<PathBuf>,
     #[serde(default)]
@@ -93,6 +97,7 @@ impl Config {
             .map_or_else(|| default_dir("data"), Ok)?;
         Ok(Config {
             game_dir: env_path("VICTORY_GAME_DIR").or(file.game_dir),
+            game_exe: env_path("VICTORY_GAME_EXE").or(file.game_exe),
             cache_dir,
             data_dir,
             test_titles,
