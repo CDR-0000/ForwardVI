@@ -26,6 +26,26 @@ leave this file for the commit history.
   the thread copied 83 MB of title memory and sent 83 MB up to the card's
   copies a frame (741 pieces), made 13,374 raw view twins, mirrored
   descriptor records.
+- **The river, Nsight Systems (26 November, take 3; takes 1-2 had the driver
+  compiling pipelines on four threads, the cache being cold):** ~250 ms
+  frames; the GPU busy 110 ms of each (46 %); no thread saturated (the
+  submitting thread runs 33 % of the time, the process 2.3 cores). The frame
+  runs in turns: the submitting thread prepares (~65 ms, the card idle
+  behind it), then stands waiting for the card 115 ms a frame (our log),
+  for flights to land before the next submission. Overlapped, the frame
+  would be near max(65, 110) ms.
+  - **The relay** (`VICTORY_RELAY=2`, `VICTORY_RELAY_COPY=1`,
+    `VICTORY_CARD_STEPS=2`, as victory-scarlett runs) does the steps that
+    wait for flights on the card instead: the biggest win in sight, once its
+    black tiles flickering on NVIDIA are found and fixed.
+  - **Thread wake-ups on the submitting thread**: about half its running time
+    is in the kernel waking other threads (`NtAlertThreadByThreadIdEx`):
+    `shadow::wide`'s `notify_all` (shadow.rs:1559), `Host::card_sent`
+    (host.rs:4337), `descriptor::begin_sync_heaps` (descriptor.rs:269),
+    `watch::writes` (watch.rs:886); ~26 ms a frame. `VICTORY_WIDE_SPIN=<us>`
+    keeps the wide threads awake between batches (off); test it.
+  - ~100 `ExecuteCommandLists` a frame; the GPU submissions themselves
+    ~15 ms a frame of the thread.
 - **A recipe others report from 2 to 14 fps** (12 GB cards), to try one at a
   time at the river: `VICTORY_CARD_BUFFERS_MIN_KB=64` (we have 1 MB),
   `VICTORY_LEVELS_ON_DEMAND=1`, `VICTORY_RAW_VIEWS=0` (check the picture).
