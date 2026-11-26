@@ -661,7 +661,14 @@ pub(crate) fn pipeline(
 
 /// Writes the library and the early list if pipelines were added since the
 /// last save and `SAVE_EVERY` has passed (or `now`).
+/// `VICTORY_LIBRARY_READONLY=1`: never (the Nsight Graphics scripts: under
+/// Nsight the driver turns the saved library down and starts an empty one,
+/// which a save would put over the one `precompile.bat` filled).
 pub(crate) fn save(now: bool) {
+    static READONLY: OnceLock<bool> = OnceLock::new();
+    if *READONLY.get_or_init(|| std::env::var_os("VICTORY_LIBRARY_READONLY").is_some_and(|v| v == "1")) {
+        return;
+    }
     static LAST: Mutex<Option<std::time::Instant>> = Mutex::new(None);
     const SAVE_EVERY: std::time::Duration = std::time::Duration::from_secs(20);
     let (Some(dir), Some(library)) = (DIR.get(), library()) else { return };
