@@ -46,9 +46,11 @@ Resizable BAR on in the BIOS helps (card memory); without it the game still runs
    from there), then builds `target\release\victory.exe`. Run it again after
    every update.
 2. **`precompile.bat`**: translates every shader into the cache (minutes, once per
-   update of the translator) and makes the driver's pipelines of every pipeline
-   earlier runs created (each run adds the new ones; long the first time, and it
-   goes on where it stopped if you close it).
+   update of the translator) and makes the driver's pipelines of those earlier
+   runs drew with (a few thousand; each run adds the new ones).
+   `precompile.bat -full` makes every pipeline the game has created instead
+   (tens of thousands: long, and about 10-15 GB of the driver's cache). Both go
+   on where they stopped if you close them.
 3. **`run.bat`**: asks for a launch mode (Enter: 1080p), then plays. Everything
    happens in that one window: the game's log is shown there as it is written
    and saved to the logs folder.
