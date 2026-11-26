@@ -139,7 +139,16 @@ pub(crate) fn place_part(device: &ID3D12Device, start: u64, len: u64) -> Result<
 /// be opened; `None` leaves the caller to make a copy, as before.
 pub(crate) fn place_for(start: u64, len: u64, window: bool) -> Option<Placed> {
     // The title's memory on the card: placed over it, always.
-    if let Some(placed) = crate::cardmem::place(start, len) {
+    // `VICTORY_CARD_PLACE=buffers` / `windows`: only those (to tell which
+    // a fault comes from); the others are copied as other memory is.
+    static ONLY: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
+    let only = *ONLY.get_or_init(|| match std::env::var("VICTORY_CARD_PLACE").as_deref() {
+        Ok("buffers") => 1,
+        Ok("windows") => 2,
+        _ => 0,
+    });
+    let placing = only == 0 || (only == 1) != window;
+    if placing && let Some(placed) = crate::cardmem::place(start, len) {
         let at = if window { 0 } else { 2 };
         STATS[at].fetch_add(1, Ordering::Relaxed);
         STATS[at + 1].fetch_add(len, Ordering::Relaxed);
