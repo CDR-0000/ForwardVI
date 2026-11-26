@@ -1,4 +1,30 @@
-# VIctory on an RX 7900 XTX
+# ForwardVI
+
+ForwardVI runs an Xbox Series title natively on Windows, aimed at **NVIDIA GPUs**.
+It is built on [avatarmanz/VIctory-7900XTX](https://github.com/avatarmanz/VIctory-7900XTX)
+(itself a fork of [VIctory](https://github.com/Marvisak/VIctory)), with ForwardVI's
+own work on top:
+
+- **Card memory** through Resizable BAR (`VICTORY_CARD_MEMORY=1`): the title's
+  write-combined memory lives on the card, so the GPU reads it in place.
+- **Texture keeping**: a texture slot that goes stale keeps showing its old
+  texture until the new one is uploaded (`VICTORY_STALE_KEEP_MS`).
+- **Ray-tracing structures**: `victory bvh-check` builds a structure with the
+  console's builder on this GPU and checks it on the CPU, without running the title.
+- **The frame graph** (`VICTORY_FRAME_GRAPH=1`): a small window with one bar per frame.
+- **The PC upscaler** (`VICTORY_FSR_DLL`, from zm0kiemedia/Neptune_VI): the title's
+  FidelityFX upscaler goes to a PC FidelityFX DLL, so OptiScaler can take it over
+  and add frame generation.
+- **The D3D12 Agility SDK runtime** for Windows 10 (`cargo xtask agility`).
+
+The goal now: a steady frame rate on NVIDIA at 1080p, measured with Nsight.
+The upstream description follows.
+
+**This repository contains no game files, code or assets.** You need your own copy.
+
+---
+
+## Upstream: VIctory on an RX 7900 XTX
 
 A fork of [VIctory](https://github.com/Marvisak/VIctory), a compatibility layer
 that runs an Xbox Series title natively on Windows from files the user supplies.
