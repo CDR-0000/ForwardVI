@@ -32,4 +32,12 @@ rem Card memory through Resizable BAR (ReBAR on in the BIOS; without it the
 rem game runs as before), and avatarmanz's windows in card memory on top.
 if not defined VICTORY_CARD_MEMORY set VICTORY_CARD_MEMORY=1
 if not defined VICTORY_WINDOWS_BAR_MB set VICTORY_WINDOWS_BAR_MB=1024
+rem Title buffers of 1 MB and more get a copy in the card's memory (up to 1 GB
+rem of them), where the card finds what shaders wrote. On cards of 12 GB or less
+rem the defaults are 16 MB and 512 MB: at the river the 512 MB were full and the
+rem processor snapshotted and compared 294 MB a frame of the copies of 1-16 MB
+rem buffers, which the submitting thread waits for (26 November: 3.4 fps,
+rem 190 ms a frame waiting for the card while it ran 80 ms of work).
+if not defined VICTORY_CARD_BUFFERS_MIN_MB set VICTORY_CARD_BUFFERS_MIN_MB=1
+if not defined VICTORY_CARD_BUFFERS_MB set VICTORY_CARD_BUFFERS_MB=1024
 set VICTORY_LOG=info

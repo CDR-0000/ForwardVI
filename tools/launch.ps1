@@ -23,7 +23,11 @@ param(
 if (-not $Log -or -not $Exe) { 'launch.ps1: no log or program given.'; exit 1 }
 $ErrorActionPreference = 'Stop'
 $out = [IO.Path]::ChangeExtension($Log, '.out' + [IO.Path]::GetExtension($Log))
-$game = Start-Process -FilePath $Exe -ArgumentList $Arguments -NoNewWindow -PassThru -RedirectStandardError $Log -RedirectStandardOutput $out
+# When the game writes its log to the file itself (VICTORY_LOG_FILE, under a
+# wrapper), standard error goes to a file of its own beside it.
+$err = $Log
+if ($env:VICTORY_LOG_FILE) { $err = [IO.Path]::ChangeExtension($Log, '.err' + [IO.Path]::GetExtension($Log)) }
+$game = Start-Process -FilePath $Exe -ArgumentList $Arguments -NoNewWindow -PassThru -RedirectStandardError $err -RedirectStandardOutput $out
 # (Taken at once, so that the exit code can be read at the end.)
 $null = $game.Handle
 $colours = [regex]"\x1b\[[0-9;]*m"
@@ -50,6 +54,7 @@ function Show-Tail($tail, [switch]$Last) {
   if ($Last -and $tail.Rest) { $colours.Replace($tail.Rest, ''); $tail.Rest = '' }
 }
 $tails = @((New-Tail $Log), (New-Tail $out))
+if ($err -ne $Log) { $tails += New-Tail $err }
 
 # Nsight Systems: R records 5 seconds.
 $nsys = $env:NSYS; $session = $env:NSYS_SESSION

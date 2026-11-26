@@ -47,6 +47,8 @@ set LAUNCH_ARGS=run "%GAME_EXE%" --execute %ARGS%
 if not defined WRAP_EXE goto :launch
 set "LAUNCH_EXE=%WRAP_EXE%"
 set LAUNCH_ARGS=%WRAP_ARGS% "%EXE%" run "%GAME_EXE%" --execute %ARGS%
+rem A wrapper keeps the game's output: the game writes its log to the file itself.
+set "VICTORY_LOG_FILE=%LOG%"
 :launch
 echo.
 echo == [%time%] Game: %GAME_EXE% ==
