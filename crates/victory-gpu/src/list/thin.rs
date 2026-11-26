@@ -235,6 +235,8 @@ impl Recording {
                 let mut inner = held(&self.inner);
                 let Some(chunk) = inner.chunks.pop_front() else {
                     inner.scheduled = false;
+                    // [`caught_up`] may wait for this.
+                    self.moved.notify_all();
                     return;
                 };
                 if inner.back == 0 {
@@ -341,6 +343,26 @@ pub(crate) fn submitted(lists: &[This]) -> Arc<[Arc<Recording>]> {
             front.recording.clone()
         })
         .collect()
+}
+
+/// The list of ours behind the title's list `this`, with everything the title
+/// wrote down so far translated: for a library that records onto the host list at
+/// the call (`crate::external`, the PC's upscaler). The title's thread waits here;
+/// nobody else writes this list down, so nothing is translated into the list of
+/// ours until the title calls again. `None`: closed, or never begun. (From
+/// zm0kiemedia/Neptune_VI, GPL-3.0-or-later.)
+pub(super) fn caught_up(this: This) -> Option<This> {
+    let front = front(this);
+    if front.closed {
+        return None;
+    }
+    let recording = front.recording.clone()?;
+    front.hand_over();
+    let mut inner = held(&recording.inner);
+    while inner.scheduled || !inner.chunks.is_empty() {
+        inner = recording.moved.wait(inner).unwrap_or_else(|e| e.into_inner());
+    }
+    (inner.back != 0).then_some(inner.back as This)
 }
 
 /// For the frame-rate line.

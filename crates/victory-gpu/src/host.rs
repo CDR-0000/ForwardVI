@@ -8833,8 +8833,8 @@ struct Presenter {
     panel: panel::Panel,
 }
 
-/// The frame rate, shown in the window's caption every second and logged
-/// every few seconds.
+/// The frame rate, logged every few seconds (the frame graph,
+/// `VICTORY_FRAME_GRAPH=1`, shows each frame).
 /// Makes the frame meter's lines of every 5 s: on a thread of ours
 /// ("victory-meter"), so presenting goes on (`VICTORY_METER_THREAD`, on
 /// unless `=0`: by the presenting thread, as before). Their counters are
@@ -8881,8 +8881,6 @@ struct Meter {
     copy_stats_frames: u64,
     drawn: u64,
     logged: std::time::Instant,
-    /// The caption the window had, once read.
-    caption: Option<Vec<u16>>,
 }
 
 impl Meter {
@@ -8895,7 +8893,6 @@ impl Meter {
             copy_stats_frames: 0,
             drawn: crate::draw::drawn(),
             logged: now,
-            caption: None,
         }
     }
 
@@ -8906,11 +8903,12 @@ impl Meter {
     }
 
     /// Counts a presented frame.
-    fn frame(&mut self, hwnd: HWND) {
+    fn frame(&mut self, _hwnd: HWND) {
         #[cfg(feature = "diagnostics")]
         tracing::debug!(target: "victory_gpu::frame", token = crate::frame::current(), "present");
         #[cfg(feature = "diagnostics")]
         crate::copystat::presented();
+        crate::framegraph::presented();
         self.frames += 1;
         #[cfg(feature = "diagnostics")]
         {
@@ -9176,40 +9174,6 @@ impl Meter {
                         );
                     }
                 }
-        });
-        if self.caption.is_none() {
-            // The window's own text, read without a message.
-            let mut buffer = vec![0u16; 512];
-            // SAFETY: a window handle and a buffer of that length.
-            let n = unsafe { InternalGetWindowText(hwnd, &mut buffer) };
-            buffer.truncate(n.max(0) as usize);
-            self.caption = Some(buffer);
-        }
-        let Some(caption) = &self.caption else { return };
-        let text = format!(" | ForwardVI {fps:.0} fps {ms:.1} ms/frame {draws:.0} draws/frame");
-        let mut text: Vec<u16> = caption.iter().copied().chain(text.encode_utf16()).collect();
-        text.push(0);
-        // Setting the text waits for the window's thread (a title thread,
-        // which may not pump for a while), so a thread of ours does it and
-        // presenting never waits; it takes the newest text when free.
-        static PENDING: Mutex<Option<(usize, Vec<u16>)>> = Mutex::new(None);
-        static SETTER: std::sync::Once = std::sync::Once::new();
-        *PENDING.lock().unwrap_or_else(|e| e.into_inner()) = Some((hwnd.0 as usize, text));
-        SETTER.call_once(|| {
-            let _ = std::thread::Builder::new()
-                .name("victory-caption".into())
-                .spawn(|| {
-                    loop {
-                        let next = PENDING.lock().unwrap_or_else(|e| e.into_inner()).take();
-                        match next {
-                            // SAFETY: a window handle and a NUL-terminated text.
-                            Some((hwnd, text)) => unsafe {
-                                let _ = SetWindowTextW(HWND(hwnd as *mut _), PCWSTR(text.as_ptr()));
-                            },
-                            None => std::thread::sleep(std::time::Duration::from_millis(100)),
-                        }
-                    }
-                });
         });
     }
 }

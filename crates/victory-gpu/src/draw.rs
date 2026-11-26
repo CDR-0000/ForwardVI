@@ -1127,6 +1127,16 @@ impl State {
         crate::draw::depth_bounds(list, min, max);
     }
 
+    /// Host work the title does not know of (a PC library recorded onto the
+    /// list, `crate::external`) has run: it set its own heaps, root signature
+    /// and pipeline. What the title set is set again, as after a cut; the
+    /// heaps as if no title's were set, so the title's go back even if it
+    /// set none. (From zm0kiemedia/Neptune_VI.)
+    pub(crate) fn after_external(&mut self, list: &HostList) {
+        self.replay(list);
+        self.host_heaps = [usize::MAX; 2];
+    }
+
     /// `list` is a new host list that continues the title's list (it was
     /// cut at a wait for a memory value, `crate::list::cut`): a new host
     /// list has nothing set, so what the title set so far is set again.

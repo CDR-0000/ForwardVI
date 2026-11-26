@@ -24,6 +24,9 @@ mod capture;
 pub mod console;
 #[cfg(all(windows, feature = "diagnostics"))]
 mod copystat;
+mod framegraph;
+#[cfg(windows)]
+pub mod external;
 #[cfg(all(windows, feature = "diagnostics"))]
 mod faultbook;
 #[cfg(windows)]
