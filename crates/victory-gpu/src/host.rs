@@ -7139,7 +7139,14 @@ impl HostList {
     /// `src` is done by the card ([`HostList::card_fill`]): the source lies
     /// in the title's memory on the card whole and `dst` in a chunk of the
     /// scratch, which is on the card too.
+    /// `VICTORY_CARD_FILLS=0`: the processor copies them at submission, as
+    /// out of other memory (the card copies when the list runs, by then the
+    /// title may have written the next frame's bytes there).
     fn fills_on_card(&self, dst: usize, src: usize, len: usize) -> bool {
+        static ON: OnceLock<bool> = OnceLock::new();
+        if !*ON.get_or_init(|| std::env::var_os("VICTORY_CARD_FILLS").is_none_or(|v| v != "0")) {
+            return false;
+        }
         if !crate::cardmem::scratch_on_card() || !crate::cardmem::touches(src, len) || crate::cardmem::source(src, len).is_none() {
             return false;
         }
