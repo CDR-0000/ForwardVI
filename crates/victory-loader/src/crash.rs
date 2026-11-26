@@ -560,6 +560,11 @@ unsafe fn thrown(p: &[usize]) -> String {
 /// # Safety
 /// See [`report_unhandled`].
 unsafe fn report(what: &str, info: *const EXCEPTION_POINTERS, to_file: bool) {
+    // The log lines queued before the crash go out first (the log is written
+    // by a thread of its own, which dies with the process).
+    if to_file {
+        victory_core::logging::drain(std::time::Duration::from_millis(500));
+    }
     // SAFETY: the system passes valid exception pointers.
     let (record, context) = unsafe { (&*(*info).ExceptionRecord, &*(*info).ContextRecord) };
     let code = record.ExceptionCode;
@@ -619,6 +624,14 @@ unsafe fn report(what: &str, info: *const EXCEPTION_POINTERS, to_file: bool) {
     for (i, pc) in unwind(*context).into_iter().enumerate() {
         line(format!("  #{i:<2} {}", locate(pc as usize)));
     }
+    // What the registers point at, for the crash that ends the process: the
+    // title's state behind a null or wild pointer (an interpreter's code and
+    // value stack, a structure a field was read from) is in memory they name.
+    if to_file {
+        for l in register_memory(context) {
+            line(l);
+        }
+    }
     if to_file {
         let said = title_output();
         eprint!("{said}");
@@ -635,6 +648,78 @@ unsafe fn report(what: &str, info: *const EXCEPTION_POINTERS, to_file: bool) {
             file.display()
         );
     }
+}
+
+/// The memory around each register that points at readable memory, as hex
+/// lines of 16 bytes (`address: bytes  ascii`): 64 bytes before and after
+/// the address, more where a register is often an interpreter's (`rsi` its
+/// code: 160 before; `r13` and `rbp` a value stack: 256 before) and the
+/// stack (`rsp`: 384 after, the locals and the caller's spills). Values
+/// under 64 KiB are taken for numbers, not pointers.
+fn register_memory(c: &CONTEXT) -> Vec<String> {
+    let regs: [(&str, u64, usize, usize); 17] = [
+        ("rax", c.Rax, 64, 64),
+        ("rbx", c.Rbx, 64, 64),
+        ("rcx", c.Rcx, 64, 64),
+        ("rdx", c.Rdx, 64, 64),
+        ("rsi", c.Rsi, 160, 64),
+        ("rdi", c.Rdi, 64, 64),
+        ("rbp", c.Rbp, 256, 64),
+        ("rsp", c.Rsp, 0, 384),
+        ("r8", c.R8, 64, 64),
+        ("r9", c.R9, 64, 64),
+        ("r10", c.R10, 64, 64),
+        ("r11", c.R11, 64, 64),
+        ("r12", c.R12, 64, 64),
+        ("r13", c.R13, 256, 32),
+        ("r14", c.R14, 64, 64),
+        ("r15", c.R15, 160, 64),
+        ("rip", c.Rip, 64, 32),
+    ];
+    let mut out = Vec::new();
+    for (name, value, before, after) in regs {
+        let value = value as usize;
+        if value < 0x1_0000 {
+            continue;
+        }
+        let from = value.saturating_sub(before) & !15;
+        let to = value.saturating_add(after);
+        // Only the 16-byte lines whose memory can be read.
+        let lines: Vec<String> = (from..to)
+            .step_by(16)
+            .filter(|&at| readable(at, 16))
+            .map(|at| {
+                // SAFETY: `readable` found these 16 bytes committed and readable.
+                let bytes = unsafe { std::slice::from_raw_parts(at as *const u8, 16) };
+                let hex: Vec<_> = bytes.iter().map(|b| format!("{b:02x}")).collect();
+                let text: String = bytes.iter().map(|&b| if (0x20..0x7f).contains(&b) { b as char } else { '.' }).collect();
+                let mark = if (at..at + 16).contains(&value) { '>' } else { ' ' };
+                format!("   {mark}{at:#014x}: {}  {text}", hex.join(" "))
+            })
+            .collect();
+        if !lines.is_empty() {
+            out.push(format!("  memory at {name} {value:#x} ({}):", locate(value)));
+            out.extend(lines);
+        }
+    }
+    out
+}
+
+/// Whether `[address, address + len)` is committed, readable memory (no guard
+/// page) within one region.
+fn readable(address: usize, len: usize) -> bool {
+    use windows_sys::Win32::System::Memory::{
+        MEM_COMMIT, MEMORY_BASIC_INFORMATION, PAGE_EXECUTE, PAGE_GUARD, PAGE_NOACCESS, VirtualQuery,
+    };
+    // SAFETY: a zeroed MEMORY_BASIC_INFORMATION is valid.
+    let mut info: MEMORY_BASIC_INFORMATION = unsafe { std::mem::zeroed() };
+    // SAFETY: reads the address space's bookkeeping, not `address` itself.
+    let n = unsafe { VirtualQuery(address as *const _, &mut info, size_of_val(&info)) };
+    n != 0
+        && info.State == MEM_COMMIT
+        && info.Protect & (PAGE_GUARD | PAGE_NOACCESS) == 0
+        && info.Protect & 0xff != PAGE_EXECUTE
+        && address + len <= info.BaseAddress as usize + info.RegionSize
 }
 
 /// Return addresses of the faulting thread's frames, from the faulting

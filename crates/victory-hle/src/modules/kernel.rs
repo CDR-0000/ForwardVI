@@ -238,12 +238,15 @@ pub extern "system" fn OutputDebugStringW(text: *const u16) {
 /// the code and the caller, then exits on the host.
 pub extern "C" fn exit(code: i32) -> ! {
     tracing::warn!(code, from = %host::callers(), "title exits");
+    // The log is written by a thread of its own: what is queued goes out first.
+    victory_loader::drain_log(std::time::Duration::from_secs(1));
     host::exit(code)
 }
 
 /// The CRT's `abort` (also reached from `terminate`): logged like [`exit`].
 pub extern "C" fn abort() -> ! {
     tracing::error!(from = %host::callers(), "title aborts");
+    victory_loader::drain_log(std::time::Duration::from_secs(1));
     host::abort()
 }
 
@@ -286,6 +289,7 @@ extern "system" fn report_unhandled(info: *const c_void) -> i32 {
 pub extern "system" fn TerminateProcess(process: *mut c_void, code: u32) -> i32 {
     if process as isize == -1 {
         tracing::warn!(code, from = %host::callers(), "title terminates the process");
+        victory_loader::drain_log(std::time::Duration::from_secs(1));
     }
     host::terminate_process(process, code)
 }

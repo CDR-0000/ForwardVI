@@ -199,7 +199,15 @@ fn main() -> Result<()> {
         return Ok(());
     }
     let cli = Cli::parse();
-    match cli.command {
+    let result = command(cli.command);
+    // The log is written by a thread of its own: what is queued goes out
+    // before the process ends.
+    victory_core::logging::drain(std::time::Duration::from_secs(2));
+    result
+}
+
+fn command(command: Command) -> Result<()> {
+    match command {
         Command::Inspect {
             file,
             imports,

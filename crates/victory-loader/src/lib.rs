@@ -50,6 +50,8 @@ pub use crash::{
 };
 #[cfg(all(windows, feature = "diagnostics"))]
 pub use crash::save_on_crash;
+/// Waits a moment for the queued log lines to be written (before an exit).
+pub use victory_core::logging::drain as drain_log;
 pub use prepare::{PrepareError, PreparedImage, prepare};
 pub use resolve::{ImportResolver, Provenance, Resolution};
 #[cfg(all(windows, feature = "diagnostics"))]
