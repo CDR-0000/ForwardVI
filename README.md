@@ -178,10 +178,28 @@ play.
   percentile from about 500 to about 280 ms, the worst stalls from about 3 s to
   under 1 s, GPU time per frame 77 to 52 ms. Needs Resizable BAR (and "Above 4G
   decoding") on in the BIOS; without it the game's memory is made as before.
-  **Off for now:** with it characters' faces render black. Runs with parts of
-  it turned off narrowed that to the game's buffers used in place on the card
-  (`VICTORY_CARD_PLACE=buffers` keeps them black); the fills and the textures
-  there were ruled out. It is being looked into with a frame capture.
+  Faces rendered black with it at first; texture slots kept showing their old
+  texture until the new one is made (below) fixed them.
+- **Texture slots keep showing their texture while it is moved or replaced**
+  (from [zm0kiemedia/Neptune_VI](https://github.com/zm0kiemedia/Neptune_VI), its
+  black-sky fix): a slot whose texture the game moves, unmaps or replaces with
+  another read black until the new one was uploaded. With card memory on, that
+  was the black faces (a frame capture showed the face darkened by a full-screen
+  overlay sampling such a slot). Card memory with it: faces right, median world
+  frame 182 ms (5.5 fps); without card memory 240 against 253 ms, so no cost.
+  `VICTORY_STALE_KEEP_MS=0` and `VICTORY_KEEP_OTHER_VIEWS=0` turn it off.
+- **The game's ray-tracing structure builder works on NVIDIA**, checked without
+  the game: `victory bvh-check` loads `XboxBvhBuilder.dll`, has it build a
+  structure over a test mesh on the GPU through the layer, and walks the result
+  on the CPU with the reference of the node test. From 2 to 131,072 triangles:
+  every triangle reached, every box holds what is under it, and 400 of 400 test
+  rays find the same nearest hit as a test of every triangle (`--boxes` renders
+  a scene with ray-traced shadows both ways). Four fixes in the layer, each also
+  the game's: `DispatchX` counted in threads, two values the builder's programs
+  ask for, its upload memory below 2^37 where shaders reach it (from avatarmanz),
+  and the last part of a buffer that ends inside a 64 KiB page reachable by
+  address. Not yet run in the game; the shadow-ray programs and the reflection
+  tile pass still do not translate or are refused on 32-lane GPUs.
 - **The shader translator of
   [avatarmanz/VIctory-7900XTX](https://github.com/avatarmanz/VIctory-7900XTX)**,
   with DexNom's two fixes on top. Their tree translates 25,567 of the archive's
@@ -203,9 +221,10 @@ play.
 
 Next, in order:
 
-1. **Faces with the game's memory on the card.** The one change that made the
-   game clearly faster (about a quarter) leaves faces black; a frame capture in
-   Nsight Graphics is to show what the face's draw reads.
+1. **Ray tracing in the game:** the builder in a game run
+   (`VICTORY_BVH_BUILDER=1`), then the shadow-ray programs and the 64-lane
+   programs NVIDIA refuses (the reflection tile pass, hair shadows), checked with
+   `victory bvh-check` first.
 2. **avatarmanz's largest measured gains**, all on the processor's side and not
    tied to AMD: descriptor records written per draw instead of mirrored whole
    (their 280 to 124 ms), the game's list calls translated on eight threads,
@@ -226,7 +245,7 @@ We might show up on PortWatch VI soon at this rate.
 - Windows 10/11 x64, a CPU with AVX2
 - A Direct3D 12 GPU with shader model 6.6 and mesh shaders (NVIDIA RTX 20 series or newer)
 - Rust (the version in `rust-toolchain.toml`)
-- Resizable BAR on (with "Above 4G decoding") for `VICTORY_CARD_MEMORY=1` (not recommended yet)
+- Resizable BAR on (with "Above 4G decoding") for `VICTORY_CARD_MEMORY=1`
 - Several GB of free Windows commit memory (raise the paging file if `crashes.log` reports error 1455)
 
 ## Build
@@ -276,10 +295,10 @@ These draw the same image and make the frame much shorter; set them before `run`
 | `VICTORY_ASYNC_SUBMIT=1` | submissions prepared and sent on a thread of their own |
 | `VICTORY_FILL_WAIT=1` | fills of upload memory checked instead of waited for |
 | `VICTORY_AMBIENT=0.8` | an estimate of the ray-traced indirect light (lit rooms) |
+| `VICTORY_CARD_MEMORY=1` | the game's write-combined memory on the card (needs Resizable BAR): median world frame about 240 to 182 ms |
 
 Not recommended yet: the relay (`VICTORY_RELAY=2`), which lost walls and models
-before and was not faster in the latest runs; and the game's memory on the card
-(`VICTORY_CARD_MEMORY=1`), which is faster but leaves faces black.
+before and was not faster in the latest runs.
 
 Up to 256 lists are now in the air before every flight is settled (128 before;
 `VICTORY_LATE_WAIT_LISTS=128` brings that back): at 128 the frame's lists

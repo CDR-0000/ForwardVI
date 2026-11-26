@@ -1,8 +1,36 @@
 # Ray tracing in this fork: what the title does and what has been built
 
-Status, 2026-11-25: **nothing is lit by ray tracing yet.** Most of the
-machinery translates and is unit-tested; it has not yet run end to end in the
-game. Everything here is off by default.
+Status, 2026-11-26: **the structure builder builds correct structures on an
+NVIDIA card**, checked without the game (`victory bvh-check`, below); nothing is
+lit by ray tracing in the game yet. Everything here is off by default.
+
+## The headless check (`victory bvh-check`)
+
+Loads the title's `XboxBvhBuilder.dll` through the loader and runtime (no
+title), makes the device, a queue, a list and title buffers as the title does
+(`victory_gpu::testbed`), asks the builder for a bottom-level structure over a
+test mesh (`--size N`: N x N quads; `--boxes`: a ground with two boxes), runs
+the list, and checks the result on the CPU with `victory_shader::bvh`: every
+input triangle reached once, every box holds what lies under it, and 400 rays
+find the same nearest hit as a test of every triangle. It writes a picture
+(sun light and ray-traced shadows, through the structure and by every
+triangle) to the cache folder. `VICTORY_BVH_STOP_AFTER=<k>` runs only the
+builder's first k dispatches, to look at what each stage writes.
+
+What the structures look like, as this builder writes them: a header with the
+root's node pointer at dword 12 and the bounds at dwords 4-9; 128-byte box
+nodes (32-bit floats); 64-byte triangle nodes of one triangle (dword 12 = 1) or
+of an input quad's two (dword 12 = 0x81, triangle numbers in dwords 13 and 14,
+vertex maps in dword 15), the parent's pointer naming the first.
+
+What it found (26 November), all fixed: `DispatchX` counts in threads; the
+`USER_DISPATCH_THREADS_X` and `USER_ROOT_ADDRESS` values the builder's programs
+ask for; its build records in list upload memory from the process heap, past
+the 40 bits shaders address (its first stage read zeros and wrote no header:
+`crate::upload`, from avatarmanz/VIctory-7900XTX); and the part of a buffer
+that ends inside a 64 KiB page of the directory of memory by address, which
+was unreachable (meshes over 5,461 triangles lost the rest). Passes from 2 to
+131,072 triangles (the largest built in 56 ms).
 
 ## What the title does
 

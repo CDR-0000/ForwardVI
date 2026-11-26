@@ -81,8 +81,11 @@ GPU does about 78 ms of it, so the processor work around each of the frame's
    that memory), not the shader translator; with only the buffers placed
    (`VICTORY_CARD_PLACE=buffers`) faces stay black. Suspected: the GPU reads
    the title's live buffer memory after the title has begun to rewrite it
-   (copies took a snapshot at submission). Next: a frame capture of a face's
-   draw (`nsight-capture.bat`).
+   (copies took a snapshot at submission). Found with a frame capture: a
+   full-screen overlay sampled a texture slot that read black while its
+   texture was moved; texture slots now keep showing their texture until the
+   new one is made (Neptune_VI's black-sky fix), and faces are right with card
+   memory on (182 ms median against 240 without it).
 7. **Next: avatarmanz/VIctory-7900XTX's processor-side gains** (measured on
    an RX 7900 XTX, none tied to AMD): descriptor records written per draw
    (280 to 124 ms there), list calls translated on eight threads
@@ -118,9 +121,11 @@ program passes values through LDS between them with no barrier. Split into two
 host waves they need one, and a barrier cannot go where only some lanes go (the
 others would never reach it and the group would hang).
 
-`docs/fork-ray-tracing.md` says the ray-tracing **structure builder**
-(`XboxBvhBuilder.dll`) is held back the same way on NVIDIA: it runs all or
-none (`VICTORY_BVH_BUILDER=1`), and some of its stages are refused. With it off,
+The ray-tracing **structure builder** (`XboxBvhBuilder.dll`) is no longer held
+back: all its programs translate on 32-lane GPUs (with `VICTORY_FIRSTLANE_OWN=1`
+for three scans, exact there), and `victory bvh-check` shows it building correct
+structures (`docs/fork-ray-tracing.md`). It still runs only with
+`VICTORY_BVH_BUILDER=1`, and has not run in the game yet. Before: With it off,
 its dispatches are about 600 of the "dropped without a host pipeline" a frame,
 and the traced lighting has no structures to trace against (likely much of why
 shadowed areas are black).
