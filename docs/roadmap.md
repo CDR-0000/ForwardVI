@@ -73,6 +73,22 @@ GPU does about 78 ms of it, so the processor work around each of the frame's
       directly; GPU copies from its pages, or the pool itself on the card.
    Vulkan has the placed mapping this needs built in
    (`VK_EXT_map_memory_placed`); D3D12 only through the reservation trick.
+   State (26 November, `VICTORY_CARD_MEMORY=1`): stages 1 and 2 built (the
+   reservation on the card, buffers and windows placed there, fills from it
+   copied on the card): median 221 to about 165 ms. **Off by default: faces
+   render black with it.** Not the fills (`VICTORY_CARD_FILLS=0`), not the
+   textures there (93, 54 MB; reads now direct, as the kernel's read refuses
+   that memory), not the shader translator; with only the buffers placed
+   (`VICTORY_CARD_PLACE=buffers`) faces stay black. Suspected: the GPU reads
+   the title's live buffer memory after the title has begun to rewrite it
+   (copies took a snapshot at submission). Next: a frame capture of a face's
+   draw (`nsight-capture.bat`).
+7. **Next: avatarmanz/VIctory-7900XTX's processor-side gains** (measured on
+   an RX 7900 XTX, none tied to AMD): descriptor records written per draw
+   (280 to 124 ms there), list calls translated on eight threads
+   (`VICTORY_THIN`), preparing spread over threads. Their small buffers'
+   copies on the card (`VICTORY_CARD_BUFFERS_MIN_KB=64`) were ported and
+   measured slower here (166 to 359 ms): off.
 
 Then: a GPU trace in Nsight Graphics (`nsight.bat`, its own cache folder; see
 `docs/profiling.md`) once the processor side is near the GPU's time.

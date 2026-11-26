@@ -9,8 +9,11 @@ of the game. Not affiliated with or endorsed by its developer or publisher.
 ## Goal
 
 **Raise the frame rate to a playable level while making sure everything renders
-properly.** Nobody has yet gone past 3-4 fps in the world, and a faster frame
-that draws less, or draws it wrong, is not a gain.
+properly.** The first target is 15 frames a second (67 ms) in the world on an
+RTX 3080 Ti with 32 GB; ForwardVI is at about 5-6 now. Other forks report more
+on other hardware (avatarmanz/VIctory-7900XTX: 13-22 fps in some scenes on an RX
+7900 XTX with 64 GB, 6-10 in the busiest), and their best ideas are being
+brought over. A faster frame that draws less, or draws it wrong, is not a gain.
 
 How changes get in:
 
@@ -21,8 +24,9 @@ How changes get in:
 - **Checked on screen.** A change that speeds things up by skipping or breaking
   rendering is a regression, not a gain.
 - **Taken from the whole VIctory family.** Good changes from VIctory, victory-fork,
-  ztrx and VItoriaBr (merged or still open) are brought in when they hold up under
-  the two rules above, with credit to their authors.
+  ztrx, VItoriaBr, DexNom/VIctory and avatarmanz/VIctory-7900XTX (merged or still
+  open) are brought in when they hold up under the two rules above, with credit to
+  their authors. Changes made for AMD cards are checked on NVIDIA first.
 
 Pull requests and issues are open to prior contributors. A performance change
 needs its before/after measurement and screenshots showing the image unchanged.
@@ -197,9 +201,23 @@ play.
   buffer on the card (`VICTORY_CARD_BUFFERS_MIN_KB=64`: 175 MB up and 80 MB back
   every frame, 166 to 359 ms).
 
-Next: the remaining copies of the page pool (textures and streaming), which
-still take most of the processor's copy time and about 6 GB of the PC's memory.
-What comes next, and what does not render yet, is in `docs/roadmap.md`.
+Next, in order:
+
+1. **Faces with the game's memory on the card.** The one change that made the
+   game clearly faster (about a quarter) leaves faces black; a frame capture in
+   Nsight Graphics is to show what the face's draw reads.
+2. **avatarmanz's largest measured gains**, all on the processor's side and not
+   tied to AMD: descriptor records written per draw instead of mirrored whole
+   (their 280 to 124 ms), the game's list calls translated on eight threads,
+   and the preparing work spread over threads.
+3. **The remaining copies of the page pool** (textures and streaming): most of
+   the processor's copy time and about 6 GB of the PC's memory.
+
+Later: the game's own FSR upscaler (it loads on the Series S profile, `--console
+series-s`, but the picture stays black there: the final image is made by a
+compute pass whose result does not reach the window yet), and frame generation
+fed with the game's own motion vectors once the frame rate itself is near 30.
+What does not render yet is in `docs/roadmap.md`.
 
 We might show up on PortWatch VI soon at this rate.
 
