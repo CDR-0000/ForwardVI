@@ -60,10 +60,10 @@ pub fn run(jobs: Option<usize>, limit: Option<usize>, again: bool, used: bool, t
     all.sort_by_key(|&n| (!early.contains(keys[n].as_str()), &keys[n]));
     all.truncate(limit.unwrap_or(usize::MAX));
     let cores = std::thread::available_parallelism().map_or(4, |n| n.get());
-    // Every logical core: the processes run at idle priority, so whatever
-    // else the PC does goes first (two thirds of them kept 8 of 10 busy on
-    // average over a full warm, 26 November).
-    let jobs = jobs.unwrap_or(cores).max(1);
+    // Two thirds of the logical cores. Every one (16 processes, each with a
+    // device and the driver's compiler) froze the whole PC, the cursor too,
+    // idle priority or not (26 November); two thirds ran a full warm fine.
+    let jobs = jobs.unwrap_or(cores * 2 / 3).max(1);
     println!(
         "{} pipelines known, {} made before ({fingerprint}), {} bad; {} to make, {jobs} processes",
         keys.len(),

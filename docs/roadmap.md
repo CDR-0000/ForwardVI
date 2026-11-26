@@ -42,8 +42,10 @@ leave this file for the commit history.
 
 ## Tools
 
-- **Pipeline warm-up (`victory warm`)**: every logical core now. The long tail
-  is a few pipelines of 10-38 s each (p99 17 s): make the known slow ones
+- **Pipeline warm-up (`victory warm`)**: two thirds of the logical cores (10
+  processes here). Every core (16) froze the whole PC, the cursor too, though
+  the processes run at idle priority: the GPU driver or memory, not the CPU.
+  The long tail is a few pipelines of 10-38 s each (p99 17 s): make the known slow ones
   (`slow-pipelines.txt`) first, so they do not finish last; try batches
   smaller than 40 per process (each new process sets up a device and loads
   translations, so measure).
