@@ -161,7 +161,18 @@ fn card_limits() -> (u64, u64) {
         // the shader writes of the smaller buffers are then found by the
         // card's hashes too, and with that the first room's walls were
         // drawn in every run.
-        (mb("VICTORY_CARD_BUFFERS_MIN_MB", 16).max(1 << 20), mb("VICTORY_CARD_BUFFERS_MB", 512))
+        let mut least = mb("VICTORY_CARD_BUFFERS_MIN_MB", 16).max(1 << 20);
+        // `VICTORY_CARD_BUFFERS_MIN_KB` (from avatarmanz/VIctory-7900XTX
+        // 17c4717, after fxceless c36971b2) says the least size in KiB, so
+        // that it can go under 1 MiB: 64 is every title buffer. Copies under
+        // 1 MiB are nearly all there are and few bytes; in the PC's memory
+        // every load, store and atomic a shader does on them crosses the bus.
+        if let Some(kib) = std::env::var("VICTORY_CARD_BUFFERS_MIN_KB").ok().and_then(|v| v.trim().parse::<u64>().ok())
+            && kib > 0
+        {
+            least = kib << 10;
+        }
+        (least, mb("VICTORY_CARD_BUFFERS_MB", 512))
     })
 }
 
@@ -3273,6 +3284,22 @@ impl Shadow {
 
     /// Of a copy in the card's memory: the CPU's side (PC memory), the
     /// card side's bytes from before if made yet, and their size.
+    /// The bytes of the copy the card's hashes cover: the title buffer's
+    /// own, rounded up to the hash's 16-byte step. The card's buffer is the
+    /// title buffer rounded up to 64 KiB, of which a title buffer of 288
+    /// bytes can give nothing back but those (avatarmanz/VIctory-7900XTX
+    /// 17c4717, after fxceless c36971b2). `VICTORY_CARD_HASH_LEN=0`: the
+    /// whole buffer.
+    pub(crate) fn card_hash_size(&self) -> u64 {
+        static OWN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let size = self.card.as_ref().map_or(self.len, |c| c.size);
+        if *OWN.get_or_init(|| std::env::var_os("VICTORY_CARD_HASH_LEN").is_none_or(|v| v != "0")) {
+            self.len.next_multiple_of(16).min(size)
+        } else {
+            size
+        }
+    }
+
     pub(crate) fn card_sides(&self) -> Option<(&ID3D12Resource, Option<ID3D12Resource>, u64)> {
         let card = self.card.as_ref()?;
         let before = card.before.lock().unwrap_or_else(|e| e.into_inner()).clone();

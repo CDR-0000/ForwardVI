@@ -4238,7 +4238,7 @@ impl Host {
                     // Where the next range lies in the landing buffer.
                     let mut at = 0u64;
                     for (shadow, ranges) in &dirty {
-                        let Some((staging, before, size)) = shadow.card_sides() else {
+                        let Some((staging, before, _)) = shadow.card_sides() else {
                             continue;
                         };
                         for &(a, b) in ranges {
@@ -4281,7 +4281,8 @@ impl Host {
                         CARD_PASSES[0].fetch_add(runs.len() as u64, Ordering::Relaxed);
                         CARD_PASSES[1].fetch_add(runs.iter().map(|r| u64::from(r.pieces)).sum::<u64>(), Ordering::Relaxed);
                         for run in runs {
-                            let constants = [run.first, run.skew, size as u32, run.pieces, 0, 0];
+                            // The buffer's own bytes (`Shadow::card_hash_size`).
+                            let constants = [run.first, run.skew, shadow.card_hash_size() as u32, run.pieces, 0, 0];
                             list.SetComputeRoot32BitConstants(0, 6, constants.as_ptr().cast(), 0);
                             list.Dispatch(run.pieces.div_ceil(64), 1, 1);
                         }
@@ -4365,7 +4366,7 @@ impl Host {
                     list.SetPipelineState(&work.pso);
                     list.SetComputeRootUnorderedAccessView(3, work.differs.0.GetGPUVirtualAddress());
                     for r in plan.ranges.iter().filter(|r| r.compared) {
-                        let Some((_, Some(before), size)) = r.shadow.card_sides() else {
+                        let (Some((_, Some(before), _)), size) = (r.shadow.card_sides(), r.shadow.card_hash_size()) else {
                             continue;
                         };
                         let constants = [r.span.first, r.span.skew, size as u32, r.span.pieces, r.at * 4, if flown { 2 } else { 1 }];
@@ -4395,7 +4396,7 @@ impl Host {
                         list.SetComputeRootUnorderedAccessView(4, inflight.fetched.0.GetGPUVirtualAddress());
                         let mut every = true;
                         for r in plan.ranges.iter().filter(|r| r.compared) {
-                            let Some((_, Some(_), size)) = r.shadow.card_sides() else {
+                            let (Some((_, Some(_), _)), size) = (r.shadow.card_sides(), r.shadow.card_hash_size()) else {
                                 every = false;
                                 continue;
                             };

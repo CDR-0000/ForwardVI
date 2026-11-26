@@ -22,7 +22,7 @@
 
 use std::collections::HashMap;
 use std::panic::Location;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use windows::Win32::Graphics::Direct3D12::*;
@@ -47,7 +47,9 @@ pub(crate) fn set_supported(yes: bool) {
 /// from the title's memory on the card are then GPU copies
 /// (`crate::host::HostList::card_fill`), not processor reads at 42 MB/s.
 pub(crate) fn scratch_on_card() -> bool {
-    on() && SUPPORTED.load(Ordering::Relaxed)
+    // `VICTORY_CARD_FILLS=0`: fills are the processor's, as before.
+    static FILLS: OnceLock<bool> = OnceLock::new();
+    on() && SUPPORTED.load(Ordering::Relaxed) && *FILLS.get_or_init(|| std::env::var_os("VICTORY_CARD_FILLS").is_none_or(|v| v != "0"))
 }
 
 /// A reservation of the title's on the card: where the title sees it, its
@@ -185,6 +187,12 @@ pub(crate) fn touches(at: usize, len: usize) -> bool {
 /// `[start, start + len)` placed over the title's memory on the card, if
 /// it lies there whole.
 pub(crate) fn place(start: u64, len: u64) -> Option<crate::inplace::Placed> {
+    // `VICTORY_CARD_PLACE=0`: copies are made of it instead, as of other
+    // memory (to tell what of card memory a fault comes from).
+    static PLACE: OnceLock<bool> = OnceLock::new();
+    if !*PLACE.get_or_init(|| std::env::var_os("VICTORY_CARD_PLACE").is_none_or(|v| v != "0")) {
+        return None;
+    }
     let (start, end) = (start as usize, (start + len.max(1)) as usize);
     if start < LO.load(Ordering::Relaxed) || start >= HI.load(Ordering::Relaxed) {
         return None;
@@ -227,6 +235,24 @@ pub(crate) fn blocked_fill(src: usize, len: usize, _dst: usize, in_scratch: bool
     BLOCKED_FILLS[3].fetch_add(len as u64, Ordering::Relaxed);
 }
 
+/// Refreshes of textures whose memory lies in the title's memory on the
+/// card, since the last [`say`]: how many, bytes read, microseconds; and
+/// the textures seen there (by address) with their bytes.
+static TEXTURE_REFRESHES: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
+static TEXTURES_SEEN: Mutex<Option<HashMap<usize, usize>>> = Mutex::new(None);
+
+/// A texture refresh of `size` bytes at `at` that read `read` bytes in
+/// `us` microseconds: counted if it lies in the title's memory on the card.
+pub(crate) fn texture_refresh(at: usize, size: usize, read: usize, us: u64) {
+    if HI.load(Ordering::Relaxed) == 0 || !touches(at, size) {
+        return;
+    }
+    TEXTURE_REFRESHES[0].fetch_add(1, Ordering::Relaxed);
+    TEXTURE_REFRESHES[1].fetch_add(read as u64, Ordering::Relaxed);
+    TEXTURE_REFRESHES[2].fetch_add(us, Ordering::Relaxed);
+    TEXTURES_SEEN.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(at, size);
+}
+
 /// Reads of ours of the title's memory on the card, by where they are
 /// made: calls and bytes since the last [`say`].
 static READS: Mutex<Option<HashMap<&'static Location<'static>, (u64, u64)>>> = Mutex::new(None);
@@ -259,6 +285,20 @@ pub(crate) fn say() {
         .take(8)
         .map(|(at, (n, bytes))| format!("{}:{} {n} reads {:.2} MB", at.file(), at.line(), *bytes as f64 / 1e6))
         .collect();
+    let t = TEXTURE_REFRESHES.each_ref().map(|c| c.swap(0, Ordering::Relaxed));
+    let (seen, seen_bytes) = TEXTURES_SEEN
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .map_or((0, 0), |m| (m.len(), m.values().sum::<usize>()));
+    tracing::info!(
+        "textures in the title's memory on the card, the second before: {} refreshes read {:.1} MB in {:.0} ms; {} such textures seen so far, {} MB",
+        t[0],
+        t[1] as f64 / 1e6,
+        t[2] as f64 / 1e3,
+        seen,
+        seen_bytes >> 20
+    );
     let b = BLOCKED_FILLS.each_ref().map(|c| c.swap(0, Ordering::Relaxed));
     tracing::info!(
         "fills of upload memory that waited for the flights, the second before: {} with their source not on the card, {} partly on it, {} into memory outside the scratch; {:.2} MB",

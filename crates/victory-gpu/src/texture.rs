@@ -1131,7 +1131,11 @@ impl Staging {
     fn refresh_now(&self) -> usize {
         let whole = std::time::Instant::now();
         let read = self.refresh_timed();
-        REFRESH_WAITS[3].fetch_add(whole.elapsed().as_micros() as u64, std::sync::atomic::Ordering::Relaxed);
+        let us = whole.elapsed().as_micros() as u64;
+        REFRESH_WAITS[3].fetch_add(us, std::sync::atomic::Ordering::Relaxed);
+        // Textures in the title's memory on the card: read there by the
+        // processor (42 MB/s), counted (`crate::cardmem::texture_refresh`).
+        crate::cardmem::texture_refresh(self.memory as usize, self.layout.size as usize, read, us);
         read
     }
 
