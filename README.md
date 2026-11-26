@@ -63,9 +63,10 @@ Resizable BAR on in the BIOS helps (card memory); without it the game still runs
    `run.bat 4k` (or `1080p`, `opti`) skips the question; `run.bat 1080p "NAME=value"`
    is the test mode.
 
-The game's switches are in `tools\settings.cmd`. The cache defaults to
-`%LOCALAPPDATA%\victory\cache` and the logs go to a `traces` folder beside it
-(`cache_dir` in `victory.toml` moves both). On **Windows 10**, run
+The game's switches are in `tools\settings.cmd`. Logs go to the `logs` folder in
+this one (git ignores it; Nsight's reports go to `logs\nsys`, `logs\nsight` and
+`logs\capture`). The cache defaults to `%LOCALAPPDATA%\victory\cache` (`cache_dir`
+in `victory.toml` moves it). On **Windows 10**, run
 `cargo xtask agility` once before `build.bat`: it fetches Microsoft's D3D12 Agility
 SDK runtime (hash-checked) beside the exe; Windows 11 needs nothing.
 

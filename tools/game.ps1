@@ -10,8 +10,8 @@
 #                   GAME_MISSING=1 if the game is not set yet.
 #
 # VICTORY_GAME_DIR / VICTORY_GAME_EXE, VICTORY_CACHE_DIR override victory.toml, as
-# they do for the program itself. Logs go to a "traces" folder beside the cache
-# folder (VICTORY_LOGS_DIR overrides), the Nsight runs' cache to "cache-nsight".
+# they do for the program itself. Logs go to the logs folder here
+# (VICTORY_LOGS_DIR overrides), the Nsight runs' cache to "cache-nsight" beside the cache folder.
 param([switch]$Ask, [switch]$Env)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -103,7 +103,8 @@ if ($Env) {
   $cache = $values['cache_dir']
   if (-not $cache) { $cache = Join-Path $env:LOCALAPPDATA 'victory\cache' }
   $base = Split-Path -Parent $cache
-  $logs = if ($env:VICTORY_LOGS_DIR) { $env:VICTORY_LOGS_DIR } else { Join-Path $base 'traces' }
+  # Logs in this folder's logs (git ignores it), unless VICTORY_LOGS_DIR says.
+  $logs = if ($env:VICTORY_LOGS_DIR) { $env:VICTORY_LOGS_DIR } else { Join-Path $root 'logs' }
   "set ""G=$($values['game_dir'].TrimEnd('\'))"""
   "set ""GAME_EXE=$found"""
   "set ""LOGS=$logs"""

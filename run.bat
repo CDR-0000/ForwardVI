@@ -2,7 +2,7 @@
 title ForwardVI - run
 rem Runs the game (build.bat and precompile.bat first). Does not build.
 rem Everything happens in this window: the game's log is shown here as it is
-rem written (and saved to the traces folder beside the cache folder).
+rem written (and saved to the logs folder here).
 rem
 rem   run.bat                 asks which launch mode (Enter: 1080p)
 rem   run.bat 1080p           1080p (the console reports a 1080p television)
