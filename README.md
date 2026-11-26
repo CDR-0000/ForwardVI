@@ -83,6 +83,10 @@ On top of ztrx so far, each with credit to its authors:
   targets, and a voxel visibility compute shader that translates again (a wave64
   mask restored from scalar copies). Checked on an RTX 3080 Ti after a full
   precompile: same frame time, one shader that no longer drops its work.
+- **The shader translator and the indirect light stand-in of
+  [avatarmanz/VIctory-7900XTX](https://github.com/avatarmanz/VIctory-7900XTX)**,
+  which carry work of fxceless, DexNom, Belobug (beloooo, romainhedouin) and
+  ZJOU, each named in their history. Their AMD-only forms stay off on NVIDIA.
 - **Defaults that draw the correct image.** victory-fork turned on its fast
   modes by default (the relay, wide copy-back, card buffer copies from 1 MiB);
   they lost walls and models in the first room
@@ -93,10 +97,10 @@ On top of ztrx so far, each with credit to its authors:
 ## Status (2026-11-26)
 
 Boots through the intro and is playable through the opening mission, now at
-about 6 frames a second in the world (a median of about 160-165 ms a frame, from
-about 260 ms on 25 November), both while it loads in and in steady play. Anything in shadow is still dark and bright scenes
-overexpose (the game's ray-traced lighting runs as plain compute work, without
-the card's ray-tracing hardware).
+about 5-6 frames a second in the world (a median of about 165-220 ms a frame
+depending on the scene, from about 260 ms on 25 November). Rooms the game lights
+with ray-traced indirect light get an estimate of it with `VICTORY_AMBIENT=0.8`;
+without it anything in shadow is dark.
 
 **Frame time in the world**, RTX 3080 Ti and Ryzen 7 7800X3D, the median of the
 last 30 frames of a run stopped 10-20 seconds into the 3D scene:
@@ -146,8 +150,8 @@ heavy frames the table above leaves out:
 |---|---:|---:|---:|
 | Streaming stalls work, the submit thread and fills that do not wait | 259-262 ms | 3.8 | 415-442 ms |
 | + 256 command lists in flight | 221 ms | 4.5 | 500 ms |
-| + the game's GPU memory on the card (Resizable BAR) | 205 ms | 4.9 | 556 ms |
-| + constants it holds copied card to card on the GPU | **163-168 ms** | **6.0** | **262-293 ms** |
+| + the game's GPU memory on the card (Resizable BAR; off for now, below) | 205 ms | 4.9 | 556 ms |
+| + constants it holds copied card to card on the GPU (same) | 163-168 ms | 6.0 | 262-293 ms |
 
 In two minutes of steady play after that (a 165-second profile run), the median
 stayed at 145-200 ms a frame, 161 ms over its last 600 frames. Stretches that
@@ -168,17 +172,30 @@ play.
   tracked, copied or copied back. Constants the GPU needs realigned are copied
   card to card on the GPU. Median world frame 221 to about 165 ms, the 90th
   percentile from about 500 to about 280 ms, the worst stalls from about 3 s to
-  under 1 s, GPU time per frame 77 to 52 ms; same image. Needs Resizable BAR
-  (and "Above 4G decoding") on in the BIOS; without it the game's memory is
-  made as before.
+  under 1 s, GPU time per frame 77 to 52 ms. Needs Resizable BAR (and "Above 4G
+  decoding") on in the BIOS; without it the game's memory is made as before.
+  **Off for now:** with it characters' faces render black. Runs with parts of
+  it turned off narrowed that to the game's buffers used in place on the card
+  (`VICTORY_CARD_PLACE=buffers` keeps them black); the fills and the textures
+  there were ruled out. It is being looked into with a frame capture.
+- **The shader translator of
+  [avatarmanz/VIctory-7900XTX](https://github.com/avatarmanz/VIctory-7900XTX)**,
+  with DexNom's two fixes on top. Their tree translates 25,567 of the archive's
+  25,776 shader containers (198 of the rest hold no program for the GPU). Its
+  forms for AMD hardware stay off on NVIDIA.
+- **A stand-in for the ray-traced indirect light** (`VICTORY_AMBIENT=0.8`,
+  from avatarmanz, the idea beloooo's): rooms the game lights with rays, black
+  without them, get an estimate worked out from the frame.
 - **About 10 GB less memory in use.** The NVIDIA driver maps its whole shader
   cache into the process (8 and 4 GB files), and the pipelines it looked up stayed
   in memory: 10.2 GB, a third of a 32 GB PC. Its pages now go back to Windows'
   file cache every 10 seconds (`VICTORY_DRIVER_CACHE_TRIM=0` keeps them): 2 MB
   of it in memory instead, the PC's memory in use 25 instead of 30-31 GB.
 - Tried and not kept: the GPU reading the game's ordinary memory in place (it
-  stalled the GPU and slowed the game), and copies of the page pool's windows
-  on the card (the card ran out of room for textures).
+  stalled the GPU and slowed the game), copies of the page pool's windows on the
+  card (the card ran out of room for textures), and copies of every small
+  buffer on the card (`VICTORY_CARD_BUFFERS_MIN_KB=64`: 175 MB up and 80 MB back
+  every frame, 166 to 359 ms).
 
 Next: the remaining copies of the page pool (textures and streaming), which
 still take most of the processor's copy time and about 6 GB of the PC's memory.
@@ -191,7 +208,7 @@ We might show up on PortWatch VI soon at this rate.
 - Windows 10/11 x64, a CPU with AVX2
 - A Direct3D 12 GPU with shader model 6.6 and mesh shaders (NVIDIA RTX 20 series or newer)
 - Rust (the version in `rust-toolchain.toml`)
-- Resizable BAR on (with "Above 4G decoding") for `VICTORY_CARD_MEMORY=1`
+- Resizable BAR on (with "Above 4G decoding") for `VICTORY_CARD_MEMORY=1` (not recommended yet)
 - Several GB of free Windows commit memory (raise the paging file if `crashes.log` reports error 1455)
 
 ## Build
@@ -240,10 +257,11 @@ These draw the same image and make the frame much shorter; set them before `run`
 | `VICTORY_CARD_BUFFERS_MIN_MB=1` `VICTORY_CARD_BUFFERS_MB=1024` | buffers of 1 MiB and up kept in the GPU's memory, where it finds what shaders changed |
 | `VICTORY_ASYNC_SUBMIT=1` | submissions prepared and sent on a thread of their own |
 | `VICTORY_FILL_WAIT=1` | fills of upload memory checked instead of waited for |
-| `VICTORY_CARD_MEMORY=1` | the game's write-combined memory on the card (needs Resizable BAR) |
+| `VICTORY_AMBIENT=0.8` | an estimate of the ray-traced indirect light (lit rooms) |
 
 Not recommended yet: the relay (`VICTORY_RELAY=2`), which lost walls and models
-before and was not faster in the latest runs.
+before and was not faster in the latest runs; and the game's memory on the card
+(`VICTORY_CARD_MEMORY=1`), which is faster but leaves faces black.
 
 Up to 256 lists are now in the air before every flight is settled (128 before;
 `VICTORY_LATE_WAIT_LISTS=128` brings that back): at 128 the frame's lists
