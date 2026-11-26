@@ -29,6 +29,22 @@ leave this file for the commit history.
 - **A recipe others report from 2 to 14 fps** (12 GB cards), to try one at a
   time at the river: `VICTORY_CARD_BUFFERS_MIN_KB=64` (we have 1 MB),
   `VICTORY_LEVELS_ON_DEMAND=1`, `VICTORY_RAW_VIEWS=0` (check the picture).
+- **Op-lite/victory-scarlett** (branch `scarlett-fox`: cool_fox plus three
+  commits; RTX 4080 SUPER 16 GB, 32 GB RAM, 1440p, Series X): 41-61 ms a
+  frame on its opening route, about 70 ms in a heavy scene; its own note:
+  single runs differ by up to 15 ms. Its three "that made the difference":
+  - `VICTORY_FILL_TITLE=1`: in our tree already (off). Small fills the
+    title wrote itself stop waiting for flights' copy-backs. Test first.
+  - `VICTORY_POOL_DISCARD=1` (their `xmem.rs`): streaming-pool pages the
+    title gave back are reset and taken out of the working set while free
+    RAM is short. For 32 GB PCs (ours ran at 86-87 % memory load).
+  - `VICTORY_PARTIAL_DELTA=1` (their `texture/delta.rs`): a texture found
+    changed uploads only the subresources whose bytes changed.
+  Its memory set (run-128, less commit, same speed): `BAKE_DELTA`,
+  `MAP_LOCK_FINE` (a page-mapping call blocks only readers of its range),
+  `STAGING_PACK`/`STAGING_REST_MS`, `SEND_SPARE_MB`, `WINDOW_TAILS`,
+  `HEAP_PACK`, `LIST_POOL_IDLE_S`. Its set runs the relay (`VICTORY_RELAY=2`),
+  which flickered black tiles here.
 - **Card memory fills** are copied by the processor at submission
   (`VICTORY_CARD_FILLS`): the card copying them when the list ran found the
   next frame's bytes. A card copy that takes the bytes of the right frame
