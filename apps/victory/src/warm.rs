@@ -71,6 +71,8 @@ pub fn run(jobs: Option<usize>, limit: Option<usize>, again: bool, used: bool, t
     let chunks: Vec<&[usize]> = all.chunks(AT_ONCE).collect();
     let next = AtomicUsize::new(0);
     let state = Mutex::new((Vec::<f64>::new(), 0usize, 0usize));
+    // When the last progress line was written (seconds since the start).
+    let said = Mutex::new(0f64);
     let done_out = Mutex::new(std::fs::OpenOptions::new().create(true).append(true).open(&done_file)?);
     // (Read back by the runs: these are made beside the others, not before.)
     let slow_out = Mutex::new(std::fs::OpenOptions::new().create(true).append(true).open(dir.join("slow-pipelines.txt"))?);
@@ -89,9 +91,23 @@ pub fn run(jobs: Option<usize>, limit: Option<usize>, again: bool, used: bool, t
                             state.0.push(ms);
                             state.1 += usize::from(!there);
                             let count = state.0.len();
-                            if count % 1000 == 0 {
-                                println!("{count} of {}, {:.0} s", all.len(), began.elapsed().as_secs_f64());
+                            // Every 100, and at least every 5 seconds while it
+                            // goes on: done, rate, time left.
+                            let now = began.elapsed().as_secs_f64();
+                            let mut said = lock(&said);
+                            if count % 100 == 0 || now - *said >= 5.0 || count == all.len() {
+                                *said = now;
+                                let rate = count as f64 / now.max(0.001);
+                                let left = (all.len() - count) as f64 / rate.max(0.001);
+                                println!(
+                                    "{count} of {} ({:.1}%), {now:.0} s, {rate:.1} a second, about {:.0} min left; {} bad so far",
+                                    all.len(),
+                                    count as f64 * 100.0 / all.len().max(1) as f64,
+                                    left / 60.0,
+                                    state.2
+                                );
                             }
+                            drop(said);
                             drop(state);
                             let _ = writeln!(lock(&done_out), "{fingerprint} {}", keys[n]);
                         });
