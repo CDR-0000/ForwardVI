@@ -114,7 +114,7 @@ struct List {
     /// Ours, after the console layout: memory handed out by
     /// [`allocate_upload`], kept until the list is reset; the host list the
     /// calls record into (decision 0007), and the draw state the title set.
-    uploads: std::sync::Mutex<Vec<Vec<u8>>>,
+    uploads: std::sync::Mutex<Vec<UploadBlock>>,
     #[cfg(windows)]
     host: Option<crate::host::HostList>,
     #[cfg(windows)]
@@ -189,7 +189,7 @@ pub(crate) fn host_list<'a>(this: This) -> Option<&'a crate::host::HostList> {
 #[cfg(windows)]
 pub(crate) struct Detached {
     host: crate::host::HostList,
-    _uploads: Vec<Vec<u8>>,
+    _uploads: Vec<UploadBlock>,
     _state: crate::draw::State,
 }
 
@@ -512,6 +512,14 @@ pub(crate) extern "system" fn create_allocator(
 }
 
 /// Lists start open, as in D3D12.
+/// The allocator's and a graphics list's interface ids (`crate::testbed`).
+pub(crate) fn allocator_iid() -> &'static Iid {
+    &ALLOCATOR_IIDS[0]
+}
+pub(crate) fn list_iid() -> &'static Iid {
+    &LIST_IIDS[1]
+}
+
 pub(crate) extern "system" fn create_list(
     _: This,
     _nodes: u32,
@@ -751,6 +759,9 @@ extern "system" fn barrier(this: This, count: u32, barriers: *const Barrier) -> 
     {
         // SAFETY: the title passes `count` barriers.
         let barriers = unsafe { std::slice::from_raw_parts(barriers, count as usize) };
+        for b in barriers {
+            BARRIERS[(b.kind as usize).min(3)].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
         let mut host: Vec<Barrier> = barriers
             .iter()
             .filter_map(|b| host_barrier(list, b))
@@ -821,6 +832,7 @@ extern "system" fn copy_buffer_region(
     src_offset: u64,
     len: u64,
 ) {
+    note_call(2);
     #[cfg(windows)]
     if let Some(list) = host_list(this)
         && let Some(to) = buffer_range(dst, dst_offset, len)
@@ -1306,6 +1318,7 @@ extern "system" fn clear_dsv(
 /// `CopyMemoryToMemoryX(destination, source, size, flags)`: GPU addresses
 /// are title memory, copied at submission like buffer copies (if mapped).
 extern "system" fn copy_memory(this: This, dst: u64, src: u64, len: u64, _flags: u32) {
+    note_call(3);
     #[cfg(windows)]
     if let Some(list) = host_list(this)
         && dst != 0
@@ -1327,19 +1340,20 @@ extern "system" fn copy_memory(this: This, dst: u64, src: u64, len: u64, _flags:
 
 /// `DriverHintX(feature, value)`: no hints for the host.
 extern "system" fn driver_hint(_: This, _feature: u64, _value: u64) -> u64 {
+    note_call(6);
     0
 }
 
-/// `DispatchX(x, y, z, flags)`: a dispatch with console flags, which the
-/// host has no use for (the ray-tracing builder dispatches this way).
-extern "system" fn dispatch_x(this: This, x: u32, y: u32, z: u32, _flags: u32) {
+/// `DispatchX(x, y, z, flags)`: a dispatch with console flags, of which the
+/// host follows one: the counts are threads, not groups (`draw.rs`
+/// `THREAD_DIMENSIONS`; the ray-tracing structure builder dispatches this
+/// way).
+extern "system" fn dispatch_x(this: This, x: u32, y: u32, z: u32, flags: u32) {
+    count_dispatch();
     #[cfg(windows)]
-    state::dispatch(this, x, y, z);
+    with_state(this, |list, s| s.dispatch(list, x, y, z, flags));
     #[cfg(not(windows))]
-    {
-        let _ = (this, x, y, z);
-        count_dispatch();
-    }
+    let _ = (this, x, y, z, flags);
 }
 
 /// `BeginQuery`/`EndQuery(heap, type, index)`: queries are answered when
@@ -1409,17 +1423,53 @@ extern "system" fn set_pipeline(this: This, pipeline: This) {
     let _ = this;
 }
 
+/// Calls since the start of: write32, write64, copy_buffer_region,
+/// copy_memory, execute_indirect, ignored_state, driver_hint,
+/// barrier_groups (`crate::testbed`).
+pub static CALLS: [std::sync::atomic::AtomicU64; 8] = [const { std::sync::atomic::AtomicU64::new(0) }; 8];
+fn note_call(i: usize) {
+    CALLS[i].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Title barriers since the start, by kind: transition, aliasing, unordered
+/// access, other (`crate::testbed`).
+pub static BARRIERS: [std::sync::atomic::AtomicU64; 4] = [const { std::sync::atomic::AtomicU64::new(0) }; 4];
+
+/// Pipeline syncs recorded since the start (`crate::testbed`).
+pub static SYNCS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Pipeline syncs: waits for earlier work and cache flushes, at the top or
-/// bottom of the pipe `(flags, control, address, size)`. Host lists order
-/// their own work and every submission is waited for, so there is nothing
-/// to do.
-extern "system" fn sync(_: This, _flags: u32, _control: u32, _address: u64, _size: u64) {}
+/// bottom of the pipe `(flags, control, address, size)`. The host orders
+/// nothing between dispatches by itself: what shaders wrote is waited for
+/// here as at the title's barriers. The ray-tracing structure builder has
+/// no other wait between its stages: without it they overlapped and its
+/// structures came out different every time (`victory bvh-check`; from
+/// avatarmanz/VIctory-7900XTX).
+extern "system" fn sync(this: This, _flags: u32, _control: u32, _address: u64, _size: u64) {
+    SYNCS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    #[cfg(windows)]
+    if let Some(list) = host_list(this) {
+        use windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_BARRIER;
+        // SAFETY: the same layout; no resource named.
+        let barrier = unsafe { std::mem::transmute::<Barrier, D3D12_RESOURCE_BARRIER>(UAV_BARRIER) };
+        // SAFETY: an open list.
+        unsafe { list.list.ResourceBarrier(&[barrier]) };
+    }
+    #[cfg(not(windows))]
+    let _ = this;
+}
 
 /// Reset with console flags `(allocator, pipeline, flags)`; the flags only
 /// tune the console's command memory.
 extern "system" fn reset_x(this: This, allocator: This, pipeline: This, _flags: u32) -> HRESULT {
     reset(this, allocator, pipeline)
 }
+
+/// What `allocate_upload` hands out, kept until the list is reset.
+#[cfg(windows)]
+type UploadBlock = crate::upload::Upload;
+#[cfg(not(windows))]
+type UploadBlock = Vec<u8>;
 
 /// Newer lists' 0x4a0 `(size, alignment) -> pointer`: memory the list
 /// owns until it is reset, which the CPU writes and the GPU reads at the
@@ -1434,7 +1484,16 @@ extern "system" fn allocate_upload(this: This, size: u64, alignment: u64) -> *mu
     if this.is_null() || !align.is_power_of_two() {
         return std::ptr::null_mut();
     }
+    // Below 2^37, where translated shaders reach it by address (`crate::upload`).
+    #[cfg(windows)]
+    let Some(mut block) = crate::upload::Upload::new(len) else {
+        return std::ptr::null_mut();
+    };
+    #[cfg(not(windows))]
     let mut block = vec![0u8; len];
+    #[cfg(windows)]
+    let start = block.start();
+    #[cfg(not(windows))]
     let start = block.as_mut_ptr();
     // SAFETY: the offset is below `align`, so `size` bytes fit after it.
     let at = unsafe { start.add(start.align_offset(align)) };
@@ -1448,7 +1507,8 @@ extern "system" fn allocate_upload(this: This, size: u64, alignment: u64) -> *mu
 /// Draw state the host has no use for (root signatures: ours come with
 /// the pipeline; depth order and shading rate hints): any arguments,
 /// nothing returned.
-extern "system" fn ignored_state(_: This) {}
+extern "system" fn ignored_state(_: This) {
+    note_call(5);}
 
 /// The title's draw state (decision 0007, step 3), kept for its draws or
 /// set on the host list at once. Without a host GPU these do nothing.
@@ -1596,7 +1656,7 @@ mod state {
     }
     pub(super) extern "system" fn dispatch(this: This, x: u32, y: u32, z: u32) {
         super::count_dispatch();
-        with_state(this, |list, s| s.dispatch(list, x, y, z));
+        with_state(this, |list, s| s.dispatch(list, x, y, z, 0));
     }
     /// `DispatchMesh(x, y, z)` (the PC method of List6); the title's mesh
     /// programs take `x` groups only.
@@ -1699,6 +1759,7 @@ extern "system" fn execute_indirect(
     count: This,
     count_offset: u64,
 ) {
+    note_call(4);
     count_draw();
     let Some((stride, args)) = crate::signature::layout(signature) else {
         return;
@@ -1948,6 +2009,7 @@ extern "system" fn wait_value64(this: This, address: u64, comparison: u32, refer
 /// first, so only their ordering matters: one barrier on every shader
 /// write (the title's buffer barriers order compute passes).
 extern "system" fn barrier_groups(this: This, count: u32, _groups: *const u8) {
+    note_call(7);
     // Diagnostics: counted, and left out under `VICTORY_BARRIER_TEST=groups`.
     #[cfg(all(windows, feature = "diagnostics"))]
     if count > 0 {
@@ -1974,10 +2036,12 @@ extern "system" fn barrier_groups(this: This, count: u32, _groups: *const u8) {
 /// 64 bits: done when the list has run, as the GPU would. Flag 1 writes the
 /// GPU timestamp instead (64-bit form), flag 2 the system timestamp.
 extern "system" fn write32(this: This, address: u64, value: u32, _flush: u32, _flags: u32) {
+    note_call(0);
     defer_write(this, address, Written::Value(u64::from(value)), 4);
     value_written(this, address, u64::from(value));
 }
 extern "system" fn write64(this: This, address: u64, value: u64, _flush: u32, flags: u32) {
+    note_call(1);
     const GPU_TIMESTAMP: u32 = 1;
     const SYSTEM_TIMESTAMP: u32 = 2;
     let what = match flags {

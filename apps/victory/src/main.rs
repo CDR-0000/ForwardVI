@@ -3,6 +3,8 @@
 //! Every command reads the user's own files and writes only to stdout or to
 //! the user's cache directory (outside the repository).
 
+#[cfg(windows)]
+mod bvh_check;
 mod census;
 mod inspect;
 #[cfg(windows)]
@@ -125,6 +127,22 @@ enum Command {
     },
     /// Show the resolved configuration and check it.
     Config,
+    /// Build a ray-tracing structure over a test mesh with the console's
+    /// builder (XboxBvhBuilder.dll from the game folder) on this GPU, and
+    /// check it on the CPU. No title runs.
+    #[cfg(windows)]
+    BvhCheck {
+        /// Quads per side of the test mesh (two triangles each).
+        #[arg(long, default_value_t = 16)]
+        size: u32,
+        /// A ground with two boxes on it, instead of a bumpy surface.
+        #[arg(long)]
+        boxes: bool,
+        /// How many times to build, a frame apart (as a title that builds
+        /// every frame).
+        #[arg(long, default_value_t = 1)]
+        builds: u32,
+    },
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -205,6 +223,8 @@ fn main() -> Result<()> {
             title_args: _,
         } => run::run(&exe, unimplemented, strict, execute, console),
         Command::Config => show_config(),
+        #[cfg(windows)]
+        Command::BvhCheck { size, boxes, builds } => bvh_check::run(size, boxes, builds),
     }
 }
 

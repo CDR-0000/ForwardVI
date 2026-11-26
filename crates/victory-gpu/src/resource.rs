@@ -98,6 +98,32 @@ pub(crate) struct ResourceDesc {
     flags: u32,
 }
 
+/// A buffer of `bytes` in default (GPU) memory that shaders may write, as a
+/// title describes one for a ray-tracing structure, and the resource's
+/// interface id (`crate::testbed`).
+pub(crate) fn uav_buffer_desc(bytes: u64) -> (HeapProperties, ResourceDesc, &'static Iid) {
+    const DEFAULT: u32 = 1;
+    const ALLOW_UNORDERED_ACCESS: u32 = 4;
+    const ROW_MAJOR: u32 = 1;
+    (
+        HeapProperties { kind: DEFAULT, cpu_pages: 0, pool: 0, creation_nodes: 0, visible_nodes: 0 },
+        ResourceDesc {
+            dimension: BUFFER,
+            alignment: 0,
+            width: bytes,
+            height: 1,
+            depth_or_array_size: 1,
+            mip_levels: 1,
+            format: 0,
+            sample_count: 1,
+            sample_quality: 0,
+            layout: ROW_MAJOR,
+            flags: ALLOW_UNORDERED_ACCESS,
+        },
+        &RESOURCE_IIDS[0],
+    )
+}
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct AllocationInfo {

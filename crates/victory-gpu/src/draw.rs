@@ -186,6 +186,52 @@ fn windows() -> bool {
     *ON.get_or_init(|| std::env::var_os("VICTORY_INDIRECT_WINDOW").is_some_and(|v| v == "1"))
 }
 
+/// `DispatchX`: the counts are threads (the console's dispatch initiator bit
+/// "use thread dimensions"; DexNom/VIctory bc3cd4b0, through
+/// avatarmanz/VIctory-7900XTX). Taken for groups, a stage of the structure
+/// builder ran up to 64 times its threads and stored past its structure.
+const THREAD_DIMENSIONS: u32 = 0x20;
+
+/// Whether the structure builder's dispatches wait for every shader write
+/// before them (`State::dispatch`; `VICTORY_BVH_WAITS=1`, off by default).
+fn builder_waits() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("VICTORY_BVH_WAITS").is_some_and(|v| v == "1"))
+}
+
+/// `VICTORY_THREAD_DIMENSIONS=0`: such counts are taken for groups, as before.
+fn thread_dimensions() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("VICTORY_THREAD_DIMENSIONS").is_none_or(|v| v != "0"))
+}
+
+/// The groups of `size` threads that hold `threads`.
+fn dispatch_groups(threads: [u32; 3], size: [u32; 3]) -> [u32; 3] {
+    std::array::from_fn(|i| threads[i].div_ceil(size[i]))
+}
+
+/// Where a compute pipeline's user data has a word the host computes: the
+/// root parameter and the dword in it.
+fn compute_word(p: &HostPipeline, kind: u32) -> Option<(u32, u32)> {
+    let stage = p.stages.first().filter(|_| p.compute)?;
+    let (param, _) = stage.user_data?;
+    let word = stage.translated().host.user_data.iter().find(|u| u.root == RootType::Other(kind))?;
+    Some((param, word.index))
+}
+
+#[cfg(test)]
+mod thread_tests {
+    use super::*;
+
+    #[test]
+    fn threads_are_counted_in_the_programs_groups() {
+        assert_eq!(dispatch_groups([8847, 1, 1], [64, 1, 1]), [139, 1, 1]);
+        assert_eq!(dispatch_groups([74, 1, 1], [64, 1, 1]), [2, 1, 1]);
+        assert_eq!(dispatch_groups([32, 1, 1], [32, 1, 1]), [1, 1, 1]);
+        assert_eq!(dispatch_groups([0, 12, 9], [64, 4, 4]), [0, 3, 3]);
+    }
+}
+
 /// What one title list has set, and what its host list was last given.
 #[derive(Default)]
 pub(crate) struct State {
@@ -783,9 +829,23 @@ impl State {
         dword: u32,
         memory: Option<&crate::memory::Ready>,
     ) -> u32 {
-        use victory_shader::emit::{USER_MEMORY_BASE, USER_VIEW_ADDRESS, USER_VIEW_BIAS};
+        use victory_shader::emit::{USER_MEMORY_BASE, USER_ROOT_ADDRESS, USER_VIEW_ADDRESS, USER_VIEW_BIAS};
         if kind == USER_MEMORY_BASE {
             return memory.map_or(0, |m| m.base);
+        }
+        // All of every group, unless the dispatch says otherwise (`dispatch`,
+        // counted in threads). From avatarmanz/VIctory-7900XTX.
+        if kind == victory_shader::emit::USER_DISPATCH_THREADS_X {
+            return 0;
+        }
+        // The title address a root view names (programs with a spilled
+        // user-data table reach it as memory by address).
+        if kind == USER_ROOT_ADDRESS || kind == USER_ROOT_ADDRESS + 1 {
+            return match self.roots_ref(compute).get(usize::from(slot)) {
+                Some(&Root::View(address)) if kind == USER_ROOT_ADDRESS => address as u32,
+                Some(&Root::View(address)) => (address >> 32) as u32,
+                _ => 0,
+            };
         }
         if kind == USER_VIEW_BIAS {
             // The view begins on 16 bytes of the copy the address finds
@@ -2059,7 +2119,9 @@ impl State {
     }
 
     /// Runs a dispatch on the host.
-    pub(crate) fn dispatch(&mut self, list: &HostList, x: u32, y: u32, z: u32) {
+    /// `flags`: the console's `DispatchX` flags ([`THREAD_DIMENSIONS`]); 0
+    /// for a plain dispatch.
+    pub(crate) fn dispatch(&mut self, list: &HostList, x: u32, y: u32, z: u32, flags: u32) {
         // It may write the arguments a window holds clamped.
         self.window = None;
         #[cfg(feature = "diagnostics")]
@@ -2106,6 +2168,48 @@ impl State {
         }
         #[cfg(feature = "diagnostics")]
         list.note_op(|| self.op_text(format!("dispatch {x}x{y}x{z}"), true));
+        // Counted in threads: whole groups of them, and the program is told
+        // how many threads along X run, where it asks (its `bind` set that
+        // to all of them). From avatarmanz/VIctory-7900XTX, after
+        // DexNom/VIctory bc3cd4b0.
+        let size = (flags & THREAD_DIMENSIONS != 0 && thread_dimensions())
+            .then(|| p.stages.first().map(|s| s.translated().threads))
+            .flatten()
+            .filter(|size| size.iter().all(|&n| n > 0));
+        let threads = [x, y, z];
+        let [x, y, z] = size.map_or(threads, |size| dispatch_groups(threads, size));
+        if size.is_some() {
+            if !crate::pipeline::is_builder(self.pipeline as This) {
+                once!(pipeline = p.name, "a dispatch counted in threads that is not the structure builder's");
+            }
+            if let Some((param, word)) = compute_word(p, victory_shader::emit::USER_DISPATCH_THREADS_X) {
+                // SAFETY: an open list; the root signature has the word.
+                unsafe { list.list.SetComputeRoot32BitConstant(param, threads[0], word) };
+            }
+        }
+        // `VICTORY_BVH_WAITS=1`: a wait for every shader write before each
+        // of the structure builder's dispatches. Not needed: its own
+        // enhanced barriers (`list.rs` `barrier_groups`) order its stages,
+        // and `victory bvh-check` passes without it (8,192 and 32,768
+        // triangles). What made its structures differ from run to run was
+        // the upload memory it read its build records from (`crate::upload`).
+        // Diagnostic (`victory bvh-check`): `VICTORY_BVH_STOP_AFTER=<k>` runs
+        // only the builder's first `k` dispatches of the process.
+        if crate::pipeline::is_builder(self.pipeline as This) {
+            static STOP: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
+            static SEEN: AtomicU64 = AtomicU64::new(0);
+            let stop = *STOP.get_or_init(|| std::env::var("VICTORY_BVH_STOP_AFTER").ok().and_then(|v| v.parse().ok()));
+            if let Some(stop) = stop
+                && SEEN.fetch_add(1, Ordering::Relaxed) >= stop
+            {
+                return;
+            }
+        }
+        if crate::pipeline::is_builder(self.pipeline as This) && builder_waits() {
+            let barrier = D3D12_RESOURCE_BARRIER { Type: D3D12_RESOURCE_BARRIER_TYPE_UAV, ..Default::default() };
+            // SAFETY: an open list; no resource named.
+            unsafe { list.list.ResourceBarrier(&[barrier]) };
+        }
         // SAFETY: an open list with everything set.
         unsafe { list.list.Dispatch(x, y, z) };
         DISPATCHED.fetch_add(1, Ordering::Relaxed);

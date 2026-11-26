@@ -38,6 +38,18 @@ pub(crate) struct HeapDesc {
 /// memory of their own for the descriptors: an address and its size in
 /// bytes, or a null address to have the heap allocate (inferred from the
 /// title's call sites; older titles pass the plain description).
+/// A heap's interface id (`crate::testbed`).
+pub(crate) fn heap_iid() -> &'static Iid {
+    &HEAP_IIDS[0]
+}
+
+impl HeapDesc {
+    /// A shader-visible view heap of `count` slots (`crate::testbed`).
+    pub(crate) fn visible_views(count: u32) -> Self {
+        Self { kind: VIEWS_KIND, count, flags: SHADER_VISIBLE, nodes: 0 }
+    }
+}
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 struct Placement {

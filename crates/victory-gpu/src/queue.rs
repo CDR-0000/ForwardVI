@@ -28,6 +28,18 @@ pub(crate) struct QueueDesc {
     nodes: u32,
 }
 
+impl QueueDesc {
+    /// A direct queue (`crate::testbed`).
+    pub(crate) fn direct() -> Self {
+        Self { kind: 0, priority: 0, flags: 0, nodes: 0 }
+    }
+}
+
+/// The queue's interface id (`crate::testbed`).
+pub(crate) fn iid() -> &'static Iid {
+    &QUEUE_IIDS[0]
+}
+
 /// The title reads the list type right after the header.
 #[repr(C)]
 struct Queue {

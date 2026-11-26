@@ -139,11 +139,18 @@ impl Memory {
             return;
         }
         // The copy a root view at that address would get; a buffer that
-        // ends inside the page is passed over for what holds all of it.
-        let whole = |s: &Arc<Shadow>| s.offset_in(start).is_some_and(|_| s.left(start) >= PAGE);
+        // ends inside the page is passed over for what holds all of it, if
+        // something does. If not, it is the page's copy all the same: its
+        // tail was unreachable by address, as zeros (an index buffer of
+        // 75,264 bytes gave the structure builder 5,461 of its 6,272
+        // triangles, `victory bvh-check`). Addresses past its end read
+        // zeros from outside its view, as before.
+        let starts = |s: &Arc<Shadow>| s.offset_in(start).is_some();
+        let whole = |s: &Arc<Shadow>| starts(s) && s.left(start) >= PAGE;
         let Some(shadow) = crate::shadow::find(start, 1)
             .filter(whole)
             .or_else(|| crate::shadow::find(start, PAGE).filter(whole))
+            .or_else(|| crate::shadow::find(start, 1).filter(starts))
         else {
             return;
         };
@@ -163,7 +170,10 @@ impl Memory {
                 // has a copy of its own is given this copy too.
                 let (first, len) = shadow.span();
                 let mut at = first.next_multiple_of(PAGE);
-                while at + PAGE <= first + len && at / PAGE < u64::from(MEMORY_PAGES) - 1 {
+                // The last page too if the copy ends inside it (see above;
+                // a buffer of its own that holds all of it keeps that one,
+                // as only empty entries are filled).
+                while at < first + len && at / PAGE < u64::from(MEMORY_PAGES) - 1 {
                     // SAFETY: inside the directory's mapping.
                     let other = unsafe { self.directory.1.add((at / PAGE) as usize * 2) };
                     // SAFETY: as above; the offset first, as below.

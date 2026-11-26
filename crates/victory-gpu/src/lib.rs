@@ -74,6 +74,10 @@ mod cardmem;
 mod shadow;
 #[cfg(windows)]
 mod tiles;
+#[cfg(windows)]
+pub mod testbed;
+#[cfg(windows)]
+mod upload;
 pub mod signature;
 #[cfg(windows)]
 mod texture;
