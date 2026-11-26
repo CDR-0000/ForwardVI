@@ -225,8 +225,22 @@ unsafe fn wait_for_all(host: &Host, list: &ID3D12GraphicsCommandList) {
 
 /// The host copy of `[src, src + len)` if shaders write it: what it holds at
 /// a place in a list is not what title memory holds at submission.
+///
+/// The title's memory on the card (`crate::cardmem`) is placed, and its
+/// placed copy is that memory itself: copied from at the copy's place too.
+/// Read on the CPU at submission instead, a source a dispatch of the same
+/// submission writes first was the frame before's (banding and ghosting
+/// with card memory on, 26 November).
 fn shaders_own(src: usize, len: usize) -> Option<std::sync::Arc<Shadow>> {
-    crate::shadow::peek(src as u64, len as u64).filter(|s| s.written() && !s.in_place())
+    crate::shadow::peek(src as u64, len as u64)
+        .filter(|s| s.written() && (!s.in_place() || (card_sources() && crate::cardmem::touches(src, len))))
+}
+
+/// Whether copies out of the title's memory on the card are done from it
+/// at their place (`VICTORY_CARD_PLACED_SOURCE=0`: at submission, as before).
+fn card_sources() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("VICTORY_CARD_PLACED_SOURCE").is_none_or(|v| v != "0"))
 }
 
 impl HostList {
@@ -259,7 +273,10 @@ impl HostList {
         unsafe { wait_for_all(host, &self.list) };
         match (&own, &scratch) {
             (Some(from), _) => {
-                from.refresh(self, src as u64, len as u64);
+                // (Title memory itself in place: nothing to refresh.)
+                if !from.in_place() {
+                    from.refresh(self, src as u64, len as u64);
+                }
                 let offset = from.offset(src as u64);
                 if from.buffer.as_raw() == to.buffer.as_raw() {
                     let Some(between) = self.between(host, len as u64) else {
