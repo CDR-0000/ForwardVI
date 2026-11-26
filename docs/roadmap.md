@@ -3,27 +3,29 @@
 What is open, most pressing first. Each item says what is known; "done" items
 leave this file for the commit history.
 
-## Now
+## Watch
 
-- **The crash at the river** (first boat mission). Deterministic: the title's
-  script interpreter copies a 16-byte field out of a null object (opcode word
-  `0x3128`, handler at game `+0x3de6466`), the same 18-frame stack every time.
-  Crash reports now dump the memory around each register; the bytecode is
-  obfuscated (opcode word x `0x3315` into a 65,536-entry table at
-  `0x146553900`; operand bytes XOR `85 94 a7 b6 c1 d0 e3 f2`, times `0x6d`).
-  Next: decode the instructions before the crash from a dump, find the native
-  that returned null, and what it reads from us.
-- **The black sun** (and its reflection in the water): black on one PC and
-  not on another with the same GPU, driver, ReBAR and code. A stale shader
-  cache is ruled out. Next: card memory off (`VICTORY_CARD_MEMORY=0`) on the
-  affected PC; a Graphics Capture of the sky and water passes.
+- **The crash at the river and the black sun went away together** (26
+  November), after a new NVIDIA driver, every cache cleared (ours and the
+  driver's), a restart and a new build; which of these did it is not known.
+  The crash was deterministic: the title's script interpreter copied a 16-byte
+  field out of a null object (opcode word `0x3128`, handler at game
+  `+0x3de6466`, the same 18-frame stack every time); the sun was black on one
+  PC and not on another with the same GPU, driver, ReBAR and code. If either
+  comes back: crash reports dump the memory around each register, and the
+  bytecode decodes as follows (it is obfuscated): opcode word x `0x3315` into
+  a 65,536-entry table at `0x146553900`; operand bytes XOR
+  `85 94 a7 b6 c1 d0 e3 f2`, times `0x6d`.
 
 ## Frame rate
 
-- **The river: the submitting thread is the limit.** Nsight Systems: the GPU
-  runs 72-87 ms of work in a ~260 ms frame; the submitting thread copies 83 MB
-  of title memory into our copies and sends 83 MB up to the card's copies a
-  frame (741 pieces), makes 13,374 raw view twins, mirrors descriptor records.
+- **The river** (after the run above): about 195 ms a frame, 5.1-5.3 fps;
+  the GPU runs about 125 ms of it (two thirds busy), our preparing 31 ms
+  (copies 21 ms, 85 MB), copying back 16 ms. Before (Nsight Systems, ~260 ms
+  frames) the submitting thread was the limit: the GPU ran 72-87 ms of work,
+  the thread copied 83 MB of title memory and sent 83 MB up to the card's
+  copies a frame (741 pieces), made 13,374 raw view twins, mirrored
+  descriptor records.
 - **A recipe others report from 2 to 14 fps** (12 GB cards), to try one at a
   time at the river: `VICTORY_CARD_BUFFERS_MIN_KB=64` (we have 1 MB),
   `VICTORY_LEVELS_ON_DEMAND=1`, `VICTORY_RAW_VIEWS=0` (check the picture).
