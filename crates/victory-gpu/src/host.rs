@@ -7115,6 +7115,14 @@ impl Batch {
 pub(crate) fn copy_mapped(dst: *mut u8, src: *const u8, len: usize, title_dst: bool) {
     // Reads of the title's memory on the card are slow: counted by caller.
     crate::cardmem::read(src as usize, len, std::panic::Location::caller());
+    // The title's memory on the card is always mapped and the kernel's
+    // read refuses it: copied directly (`crate::cardmem::holds`).
+    if !title_dst && crate::cardmem::holds(src as usize, len) {
+        // SAFETY: inside the card memory's mapping, which lives as long as
+        // the process; `dst` is the caller's buffer of `len` bytes.
+        unsafe { std::ptr::copy_nonoverlapping(src, dst, len) };
+        return;
+    }
     #[cfg(feature = "diagnostics")]
     match crate::copystat::mode() {
         1 => {
@@ -7228,6 +7236,11 @@ fn read_pieces(src: *const u8, dst: *mut u8, len: usize) {
 #[track_caller]
 pub(crate) fn read_into(src: *const u8, dst: &mut [u8]) -> bool {
     crate::cardmem::read(src as usize, dst.len(), std::panic::Location::caller());
+    if crate::cardmem::holds(src as usize, dst.len()) {
+        // SAFETY: as in `copy_mapped`.
+        unsafe { std::ptr::copy_nonoverlapping(src, dst.as_mut_ptr(), dst.len()) };
+        return true;
+    }
     read(src, dst.as_mut_ptr(), dst.len())
 }
 

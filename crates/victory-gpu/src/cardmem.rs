@@ -184,6 +184,20 @@ pub(crate) fn touches(at: usize, len: usize) -> bool {
     BLOCKS.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|b| at < b.start + b.len && end > b.start)
 }
 
+/// Whether `[at, at + len)` lies in the title's memory on the card whole:
+/// always mapped (the title cannot unmap it), so it is read directly.
+/// The kernel's reads of other processes' memory (`ReadProcessMemory`,
+/// what reads of title memory go through elsewhere) refuse the card's
+/// memory mapped for the processor: textures there read as zeros and were
+/// never uploaded (black faces, 26 November).
+pub(crate) fn holds(at: usize, len: usize) -> bool {
+    if HI.load(Ordering::Relaxed) == 0 || at < LO.load(Ordering::Relaxed) || at >= HI.load(Ordering::Relaxed) {
+        return false;
+    }
+    let end = at.saturating_add(len);
+    BLOCKS.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|b| b.start <= at && end <= b.start + b.len)
+}
+
 /// `[start, start + len)` placed over the title's memory on the card, if
 /// it lies there whole.
 pub(crate) fn place(start: u64, len: u64) -> Option<crate::inplace::Placed> {
