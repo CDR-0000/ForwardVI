@@ -1585,6 +1585,10 @@ pub(crate) fn staged(resource: This, ask: bool) -> Option<(u64, bool)> {
 /// Whether `[at, at + len)` is committed memory (streamed textures may be
 /// unmapped until their pages arrive).
 pub(crate) fn committed(at: *const u8, len: usize) -> bool {
+    // The title's memory on the card: always mapped and committed whole.
+    if crate::cardmem::holds(at as usize, len) {
+        return true;
+    }
     if by_query() {
         return committed_by_query(at, len);
     }
