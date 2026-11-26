@@ -69,9 +69,15 @@ if ($nsys -and $session) {
   ''
 }
 
+$hinted = Get-Date
 while (-not $game.HasExited) {
   foreach ($t in $tails) { Show-Tail $t }
   if ($nsys -and $session) {
+    # The hint again every 30 s: the log scrolls it away at once.
+    if (-not $recording -and ((Get-Date) - $hinted).TotalSeconds -ge 30) {
+      "== Nsight Systems: press R in this window to record 5 seconds ($takes recorded so far) =="
+      $hinted = Get-Date
+    }
     $key = Test-Key
     if (-not $recording -and $key -and "$key" -ieq 'r') {
       $takes++
