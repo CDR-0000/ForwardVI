@@ -119,7 +119,7 @@ enum Command {
     /// of the translator or the driver. Goes on where it was stopped.
     #[cfg(windows)]
     Warm {
-        /// Processes at once (default: two thirds of the logical cores).
+        /// Processes at once (default: every logical core; they run at idle priority).
         #[arg(long)]
         jobs: Option<usize>,
         /// At most this many pipelines.
