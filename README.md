@@ -49,13 +49,19 @@ Resizable BAR on in the BIOS helps (card memory); without it the game still runs
    update of the translator) and makes the driver's pipelines of every pipeline
    earlier runs created (each run adds the new ones; long the first time, and it
    goes on where it stopped if you close it).
-3. **`run.bat`**: plays at 1080p. A second window shows the log as it is written.
-   - `run.bat 4k`: the console's 4K mode.
-   - `run.bat opti`: the title's Series S mode (1280x720 upscaled to 1080p) with
-     [OptiScaler](https://github.com/optiscaler/OptiScaler) taking over the
-     upscaler and adding frame generation. Extract an OptiScaler release into an
-     `OptiScaler` folder beside this one, or set `OPTISCALER_DIR`.
-   - `run.bat 1080p "NAME=value"`: one more `VICTORY_...` switch for a test run.
+3. **`run.bat`**: asks for a launch mode (Enter: 1080p), then plays. Everything
+   happens in that one window: the game's log is shown there as it is written
+   and saved to the logs folder.
+   1. `1080p`: native 1080p.
+   2. `4k`: the console's 4K mode.
+   3. `opti`: the title's Series S mode (1280x720 upscaled to 1080p) with
+      [OptiScaler](https://github.com/optiscaler/OptiScaler) taking over the
+      upscaler and adding frame generation. Extract an OptiScaler release into an
+      `OptiScaler` folder beside this one, or set `OPTISCALER_DIR`.
+   4. `test`: 1080p with one more `VICTORY_...` switch you type (`NAME=value`).
+
+   `run.bat 4k` (or `1080p`, `opti`) skips the question; `run.bat 1080p "NAME=value"`
+   is the test mode.
 
 The game's switches are in `tools\settings.cmd`. The cache defaults to
 `%LOCALAPPDATA%\victory\cache` and the logs go to a `traces` folder beside it

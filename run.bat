@@ -1,66 +1,109 @@
 @echo off
 title ForwardVI - run
 rem Runs the game (build.bat and precompile.bat first). Does not build.
+rem Everything happens in this window: the game's log is shown here as it is
+rem written (and saved to the traces folder beside the cache folder).
 rem
-rem   run.bat        1080p (the console reports a 1080p television)
-rem   run.bat 4k     the console's 4K mode
-rem   run.bat 1080p "VICTORY_CARD_FILLS=1"   one more switch, for a test run
-rem   run.bat opti   OptiScaler: the title's Series S mode (1280x720 upscaled to
-rem                  1080p) with its upscaler going to the PC FidelityFX DLL that
-rem                  OptiScaler takes over, and OptiScaler's frame generation.
-rem                  Needs an extracted OptiScaler release in OPTISCALER_DIR
-rem                  (default: an OptiScaler folder beside this one);
-rem                  OPTI_UPSCALER picks its upscaler (dlss by default).
+rem   run.bat                 asks which launch mode (Enter: 1080p)
+rem   run.bat 1080p           1080p (the console reports a 1080p television)
+rem   run.bat 4k              the console's 4K mode
+rem   run.bat opti            OptiScaler: the title's Series S mode (1280x720
+rem                           upscaled to 1080p) with its upscaler going to the PC
+rem                           FidelityFX DLL that OptiScaler takes over, and
+rem                           OptiScaler's frame generation. Needs an extracted
+rem                           OptiScaler release in OPTISCALER_DIR (default: an
+rem                           OptiScaler folder beside this one); OPTI_UPSCALER
+rem                           picks its upscaler (dlss by default).
+rem   run.bat 1080p "NAME=value"   one more switch, for a test run
 rem
-rem The game's folder and exe come from victory.toml (build.bat asks for them).
-rem The log goes to the traces folder beside the cache folder; a second window
-rem shows it as it is written (the game itself writes only to the file).
+rem A new mode: a line in :menu, a line in :mode, and what it sets in :set_<mode>.
 setlocal
 cd /d "%~dp0"
 call "%~dp0tools\common.cmd" || (pause & exit /b 1)
 set "MODE=%~1"
-if not defined MODE set MODE=1080p
+set "EXTRA=%~2"
+if not defined MODE call :menu
+call :mode || (pause & exit /b 1)
 for /f %%t in ('powershell -NoProfile -Command "Get-Date -Format yyyy-MM-dd_HHmmss"') do set "STAMP=%%t"
 
-rem The switches (shared with the nsight-*.bat files).
+rem The switches (shared with the nsight-*.bat files), then the mode's.
 call "%~dp0tools\settings.cmd"
 set "ARGS="
+set VICTORY_DISPLAY_MODE=1920x1080
+call :set_%MODE% || (pause & exit /b 1)
 
-if /i "%MODE%"=="4k" (
-  set VICTORY_DISPLAY_MODE=3840x2160
-) else (
-  set VICTORY_DISPLAY_MODE=1920x1080
-)
-if /i "%MODE%"=="opti" call :opti || exit /b 1
-
-rem A second argument "NAME=value" (in quotes) sets one more switch for a test
-rem run, e.g.   run.bat 1080p "VICTORY_CARD_FILLS=1"
+rem One more switch "NAME=value", for a test run.
 set "TAG=%MODE%"
-if not "%~2"=="" (
-  set "%~2"
-  for /f "tokens=1,2 delims==" %%a in ("%~2") do set "TAG=%MODE%_%%a-%%b"
+if defined EXTRA (
+  set "%EXTRA%"
+  for /f "tokens=1,2 delims==" %%a in ("%EXTRA%") do set "TAG=%MODE%_%%a-%%b"
 )
 set "LOG=%LOGS%\%STAMP%_%TAG%.log"
+
+rem What starts: the game, or a program that starts it (WRAP_EXE and WRAP_ARGS,
+rem set by nsight-systems-frametime.bat).
+set "LAUNCH_EXE=%EXE%"
+set LAUNCH_ARGS=run "%GAME_EXE%" --execute %ARGS%
+if not defined WRAP_EXE goto :launch
+set "LAUNCH_EXE=%WRAP_EXE%"
+set LAUNCH_ARGS=%WRAP_ARGS% "%EXE%" run "%GAME_EXE%" --execute %ARGS%
+:launch
+echo.
 echo == [%time%] Game: %GAME_EXE% ==
-echo == [%time%] Mode %MODE%, display %VICTORY_DISPLAY_MODE%, card memory %VICTORY_CARD_MEMORY%, extra: %~2 ==
+echo == [%time%] Mode %MODE%, display %VICTORY_DISPLAY_MODE%, card memory %VICTORY_CARD_MEMORY%, extra: %EXTRA% ==
+echo == [%time%] Starting: "%LAUNCH_EXE%" %LAUNCH_ARGS% ==
 echo == Log: %LOG% ==
-type nul > "%LOG%"
-start "ForwardVI log" powershell -NoProfile -Command "Get-Content -LiteralPath '%LOG%' -Wait -Tail 50"
-echo on
-%VICTORY_LAUNCH% "%EXE%" run "%GAME_EXE%" --execute %ARGS% 2> "%LOG%"
-@echo off
+echo.
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\launch.ps1"
 echo.
 echo == [%time%] The game ended. Log: %LOG% ==
 pause
 exit /b 0
 
-:opti
+rem ---- The launch modes ----
+
+:menu
+echo.
+echo   Launch mode:
+echo     1  1080p   native 1080p (default)
+echo     2  4k      the console's 4K mode
+echo     3  opti    Series S 1280x720 upscaled to 1080p by OptiScaler, with frame generation
+echo     4  test    1080p with one more switch you type (NAME=value)
+echo.
+set "PICK="
+set /p "PICK=  Choose 1-4 (Enter: 1): "
+if not defined PICK set PICK=1
+if "%PICK%"=="1" set "MODE=1080p"
+if "%PICK%"=="2" set "MODE=4k"
+if "%PICK%"=="3" set "MODE=opti"
+if "%PICK%"=="4" goto :menu_test
+if not defined MODE goto :menu
+exit /b 0
+:menu_test
+set "MODE=1080p"
+set /p "EXTRA=  Switch (NAME=value, e.g. VICTORY_CARD_MEMORY=0): "
+exit /b 0
+
+rem Whether MODE is one of the modes.
+:mode
+for %%m in (1080p 4k opti) do if /i "%MODE%"=="%%m" exit /b 0
+echo Unknown launch mode: %MODE% (1080p, 4k, opti)
+exit /b 1
+
+:set_1080p
+set VICTORY_DISPLAY_MODE=1920x1080
+exit /b 0
+
+:set_4k
+set VICTORY_DISPLAY_MODE=3840x2160
+exit /b 0
+
+:set_opti
 if not defined OPTISCALER_DIR set "OPTISCALER_DIR=%~dp0..\OptiScaler"
 if not defined OPTI_UPSCALER set OPTI_UPSCALER=dlss
 if not exist "%OPTISCALER_DIR%\OptiScaler.dll" (
   echo No OptiScaler.dll in %OPTISCALER_DIR%.
   echo Extract an OptiScaler release there, or set OPTISCALER_DIR to its folder.
-  pause
   exit /b 1
 )
 set "OPTI=%~dp0target\release\opti"
@@ -68,7 +111,6 @@ echo == [%time%] Setting up OptiScaler from %OPTISCALER_DIR% in %OPTI% ==
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\opti-setup.ps1" -From "%OPTISCALER_DIR%" -To "%OPTI%" -Exe "%EXE%" -Upscaler %OPTI_UPSCALER%
 if errorlevel 1 (
   echo OptiScaler setup failed - see the messages above.
-  pause
   exit /b 1
 )
 set "VICTORY_FSR_DLL=%OPTI%\amd_fidelityfx_upscaler_dx12.dll"
