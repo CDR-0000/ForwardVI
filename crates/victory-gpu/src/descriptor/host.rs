@@ -211,6 +211,13 @@ pub(crate) struct HostHeap {
     /// one of them stood in the queue of textures picked by index, ahead
     /// of or behind the ones shaders do pick by index.
     tabled: Vec<std::sync::atomic::AtomicU32>,
+    /// Per title slot: when its view was made stale by a newer view of other
+    /// memory while it showed a texture (tenths of a second, plus one; 0: it
+    /// was not, or it has been made again since), and the slots so marked in
+    /// the order they were, with that time and the view's key
+    /// ([`HostHeap::stale_kept`]; from zm0kiemedia/Neptune_VI).
+    stale_at: Vec<std::sync::atomic::AtomicU32>,
+    stale_line: Mutex<std::collections::VecDeque<(u32, u32, u64)>>,
     /// The title memory each placed texture view of this heap describes,
     /// by slot and by address ([`Spans`]): which slots a newer view of
     /// other memory there makes stale, and which to look at again when the
@@ -1696,6 +1703,10 @@ impl HostHeap {
             changed: Slots::new(count as usize),
             textures: Mutex::new(TextureQueue { queued: queued.clone(), ..Default::default() }),
             queued,
+            stale_at: (0..if sampler { 0 } else { count })
+                .map(|_| std::sync::atomic::AtomicU32::new(0))
+                .collect(),
+            stale_line: Mutex::default(),
             tabled: (0..if sampler { 0 } else { count })
                 .map(|_| std::sync::atomic::AtomicU32::new(0))
                 .collect(),
@@ -1875,6 +1886,9 @@ impl HostHeap {
     /// ([`TextureQueue::due`]), and the queue's counts
     /// ([`TextureQueue::census`]).
     pub(crate) fn texture_slots_due(&self, frame: u64, max: usize) -> (Vec<(u32, u64)>, [u64; 5]) {
+        if !self.sampler {
+            self.stale_expire();
+        }
         let (due, census) = {
             let textures = self.textures.lock().unwrap_or_else(|e| e.into_inner());
             (if max == 0 { Due::default() } else { textures.all_due(frame) }, textures.census(frame))
@@ -2452,6 +2466,10 @@ impl HostHeap {
     /// Makes host slot `index` null again, as it is before its view is
     /// made: a null view of the kind it held. Under its lock ([`Made`]).
     fn unmake(&self, index: u32) {
+        // Freed or reused: no longer one kept past its view.
+        if let Some(at) = self.stale_at.get(index as usize) {
+            at.store(0, std::sync::atomic::Ordering::Relaxed);
+        }
         self.quick_is(index, 0);
         let Some(key) = self.made.get(index) else {
             return;
@@ -2478,9 +2496,71 @@ impl HostHeap {
                 continue;
             }
             let _made = self.made.lock(slot);
-            if self.made.get(slot) == Some(key) {
+            if self.made.get(slot) == Some(key) && !self.stale_kept(slot, key) {
                 self.unmake(slot);
             }
+        }
+    }
+
+    /// (From zm0kiemedia/Neptune_VI.) Slot `index`, made from `key`, whose
+    /// texture view a newer view of other memory made stale: if it shows a
+    /// texture it goes on showing it, counted as not made, until a draw or
+    /// the texture pass makes it again or [`stale_keep_ms`] is up
+    /// ([`HostHeap::stale_expire`]); true then. Under its lock.
+    ///
+    /// A view is made stale by any newer view whose levels would reach into
+    /// its memory, often no word against it: the title keeps a texture's
+    /// small levels and puts another texture where the large ones would lie.
+    /// Made null, such a slot read black until it was made again. With the
+    /// title's memory on the card that was characters' faces (ForwardVI, 26
+    /// November). `VICTORY_STALE_KEEP_MS=0`: null at once, as before.
+    fn stale_kept(&self, index: u32, key: u64) -> bool {
+        use std::sync::atomic::Ordering::Relaxed;
+        if stale_keep_ms() == 0 {
+            return false;
+        }
+        let Some(at) = self.stale_at.get(index as usize) else {
+            return false;
+        };
+        if !view_at(key as u32, (key >> 32) as u32).as_ref().is_some_and(is_texture_view) {
+            return false;
+        }
+        let shows = self.kept.get(index as usize).is_some_and(|k| k.lock().unwrap_or_else(|e| e.into_inner()).is_some());
+        if !shows {
+            return false;
+        }
+        self.quick_is(index, 0);
+        self.made.set(index, 0);
+        let tick = (crate::host::now_ms() / 100) as u32 + 1;
+        at.store(tick, Relaxed);
+        self.stale_line.lock().unwrap_or_else(|e| e.into_inner()).push_back((index, tick, key));
+        STALE_KEPT[0].fetch_add(1, Relaxed);
+        true
+    }
+
+    /// The slots kept past their view ([`HostHeap::stale_kept`]) whose time
+    /// is up and that were not made again: null now, as they would have been
+    /// at once.
+    fn stale_expire(&self) {
+        use std::sync::atomic::Ordering::Relaxed;
+        let now = (crate::host::now_ms() / 100) as u32 + 1;
+        let keep = (stale_keep_ms() / 100) as u32;
+        let due: Vec<(u32, u32, u64)> = {
+            let mut line = self.stale_line.lock().unwrap_or_else(|e| e.into_inner());
+            let n = line.iter().take_while(|&&(_, tick, _)| now.saturating_sub(tick) >= keep).count();
+            line.drain(..n).collect()
+        };
+        for (index, tick, key) in due {
+            let _made = self.made.lock(index);
+            let Some(at) = self.stale_at.get(index as usize) else { continue };
+            // Marked again later, or made again: not this entry's.
+            if at.load(Relaxed) != tick || self.made.get(index).unwrap_or(0) != 0 {
+                continue;
+            }
+            // Made null as `unmake` makes it, from the view it showed.
+            self.made.set(index, key);
+            self.unmake(index);
+            STALE_KEPT[1].fetch_add(1, Relaxed);
         }
     }
 
@@ -2831,6 +2911,13 @@ impl HostHeap {
 
     /// Slot `index` now views `resource` (or nothing of the host's).
     fn keep(&self, index: u32, resource: Option<ID3D12Resource>) {
+        if resource.is_some()
+            && let Some(at) = self.stale_at.get(index as usize)
+            && at.load(std::sync::atomic::Ordering::Relaxed) != 0
+        {
+            at.store(0, std::sync::atomic::Ordering::Relaxed);
+            STALE_KEPT[2].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
         let Some(slot) = self.kept.get(index as usize) else {
             return;
         };
@@ -4355,6 +4442,18 @@ fn from_base(desc: &mut D3D12_SHADER_RESOURCE_VIEW_DESC, base: u32) {
 /// Writes of a slot with another view of the placed texture it showed,
 /// since the start: the slot kept showing the old view.
 pub(crate) static KEPT_VIEWS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Since the last log line: slots that went on showing their texture when
+/// a newer view made theirs stale ([`HostHeap::stale_kept`]), those made
+/// null when their time was up, and those made again before.
+pub(crate) static STALE_KEPT: [std::sync::atomic::AtomicU64; 3] = [const { std::sync::atomic::AtomicU64::new(0) }; 3];
+
+/// How long a slot made stale may go on showing its texture while it waits
+/// to be made again (`VICTORY_STALE_KEEP_MS`, 120,000; 0: null at once).
+fn stale_keep_ms() -> u64 {
+    static MS: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *MS.get_or_init(|| std::env::var("VICTORY_STALE_KEEP_MS").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(120_000))
+}
 
 /// Whether a slot written with another view of the placed texture it
 /// shows keeps showing the old one until the new is made;

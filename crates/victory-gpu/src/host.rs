@@ -8781,6 +8781,13 @@ impl Meter {
                     "placed texture views: {} writes of another view of the texture a slot showed (it kept the old view until the new was made)",
                     crate::descriptor::host::KEPT_VIEWS.load(Ordering::Relaxed)
                 );
+                {
+                    let [kept, nulled, again] =
+                        [0, 1, 2].map(|i| crate::descriptor::host::STALE_KEPT[i].swap(0, Ordering::Relaxed));
+                    tracing::info!(
+                        "texture slots a newer view made stale, in the last period: {kept} went on showing their texture, {again} were made again, {nulled} hit the cap (VICTORY_STALE_KEEP_MS) and were made null"
+                    );
+                }
                 crate::tiles::status();
                 {
                     let [queued, due, away, partly, oldest] =
