@@ -15,9 +15,9 @@ if not exist "%EXE%" (
   echo No %EXE% - run build.bat first.
   exit /b 1
 )
-rem Built from older code than this checkout's last commit: build.bat first.
-rem (Without git the check is skipped.)
-powershell -NoProfile -Command "try { $c = [datetime](git -C '%~dp0..' log -1 --format=%%cI 2>$null) } catch { exit 0 }; if ((Get-Item -LiteralPath '%EXE%').LastWriteTime -lt $c) { exit 1 }"
+rem Built before the last commit that changed the program's code (not the
+rem scripts or the documents): build.bat first. (Without git it is skipped.)
+powershell -NoProfile -Command "try { $c = [datetime](git -C '%~dp0..' log -1 --format=%%cI -- apps crates xtask Cargo.toml Cargo.lock 2>$null) } catch { exit 0 }; if ((Get-Item -LiteralPath '%EXE%').LastWriteTime -lt $c) { exit 1 }"
 if errorlevel 1 (
   echo victory.exe is older than the code - run build.bat first.
   exit /b 1
