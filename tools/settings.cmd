@@ -40,4 +40,6 @@ rem buffers, which the submitting thread waits for (26 November: 3.4 fps,
 rem 190 ms a frame waiting for the card while it ran 80 ms of work).
 if not defined VICTORY_CARD_BUFFERS_MIN_MB set VICTORY_CARD_BUFFERS_MIN_MB=1
 if not defined VICTORY_CARD_BUFFERS_MB set VICTORY_CARD_BUFFERS_MB=1024
+rem The title's 30 fps cap lifted to 60: our clock and its own setting.
+if not defined VICTORY_FRAME_INTERVAL_MS set VICTORY_FRAME_INTERVAL_MS=16.667
 set VICTORY_LOG=info
