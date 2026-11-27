@@ -28,6 +28,9 @@ call "%~dp0tools\common.cmd" || (pause & exit /b 1)
 rem The switches run.bat runs with, so the shaders and pipelines made here are
 rem the ones the game asks for.
 call "%~dp0tools\settings.cmd"
+rem What only a played run needs: no pipeline book or frame graph here.
+set VICTORY_PIPELINE_BOOK=
+set VICTORY_FRAME_GRAPH=
 set VICTORY_LOG=info
 rem What holds the game's shaders: its shader archive, the exe, the ray-tracing
 rem structure builder and the upscaler, those of them the game folder has.
