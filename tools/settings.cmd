@@ -44,6 +44,13 @@ rem buffers, which the submitting thread waits for (26 November: 3.4 fps,
 rem 190 ms a frame waiting for the card while it ran 80 ms of work).
 if not defined VICTORY_CARD_BUFFERS_MIN_MB set VICTORY_CARD_BUFFERS_MIN_MB=1
 if not defined VICTORY_CARD_BUFFERS_MB set VICTORY_CARD_BUFFERS_MB=1024
+rem And every smaller one too (64 KiB is all of them): below 1 MB the copies
+rem stayed in the PC's memory, where each load, store and atomic of a shader
+rem crosses the bus (a 2 KB binning program took 4.5 ms; Nsight: 311 MB read
+rem and 499 MB written over PCIe in one frame). 27 November, the opening scene's
+rem last 10 s: 90 to 72 ms a frame, heavy frames 108-126 to 70-88 ms, the
+rem card's part of them 52-70 to 25-37 ms.
+if not defined VICTORY_CARD_BUFFERS_MIN_KB set VICTORY_CARD_BUFFERS_MIN_KB=64
 rem DirectStorage, the game's streaming: the oldest batch of reads first (the
 rem game waits on its oldest when 16 are outstanding) and workers on the
 rem physical cores; the staging floor is 256 MB in the code (the game asks 32).
