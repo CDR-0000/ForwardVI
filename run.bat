@@ -14,7 +14,7 @@ rem                           OptiScaler's frame generation. Needs an extracted
 rem                           OptiScaler release in OPTISCALER_DIR (default: an
 rem                           OptiScaler folder beside this one); OPTI_UPSCALER
 rem                           picks its upscaler (dlss by default).
-rem   run.bat 1080p "NAME=value"   one more switch, for a test run
+rem   run.bat 1080p "NAME=value NAME=value"   more switches, for a test run
 rem
 rem A new mode: a line in :menu, a line in :mode, and what it sets in :set_<mode>.
 setlocal
@@ -32,11 +32,11 @@ set "ARGS="
 set VICTORY_DISPLAY_MODE=1920x1080
 call :set_%MODE% || (pause & exit /b 1)
 
-rem One more switch "NAME=value", for a test run.
+rem More switches "NAME=value NAME=value ...", for a test run (space between them).
 set "TAG=%MODE%"
 if defined EXTRA (
-  set "%EXTRA%"
-  for /f "tokens=1,2 delims==" %%a in ("%EXTRA%") do set "TAG=%MODE%_%%a-%%b"
+  set "TAG=%MODE%_test"
+  call :extra
 )
 set "LOG=%LOGS%\%STAMP%_%TAG%.log"
 
@@ -62,6 +62,22 @@ echo == [%time%] The game ended. Log: %LOG% ==
 pause
 exit /b 0
 
+rem Sets each NAME=value of EXTRA (spaces between them; "=" splits arguments in
+rem cmd, so they are read off one by one with for /f, whose separator is space).
+:extra
+set "REST=%EXTRA%"
+:extra_next
+if not defined REST exit /b 0
+set "ONE="
+for /f "tokens=1*" %%a in ("%REST%") do (
+  set "ONE=%%a"
+  set "REST=%%b"
+)
+if not defined ONE exit /b 0
+set "%ONE%"
+echo == test switch: %ONE% ==
+goto :extra_next
+
 rem ---- The launch modes ----
 
 :menu
@@ -70,7 +86,7 @@ echo   Launch mode:
 echo     1  1080p   native 1080p (default)
 echo     2  4k      the console's 4K mode
 echo     3  opti    Series S 1280x720 upscaled to 1080p by OptiScaler, with frame generation
-echo     4  test    1080p with one more switch you type (NAME=value)
+echo     4  test    1080p with switches you type (NAME=value, spaces between them)
 echo.
 set "PICK="
 set /p "PICK=  Choose 1-4 (Enter: 1): "
@@ -83,7 +99,7 @@ if not defined MODE goto :menu
 exit /b 0
 :menu_test
 set "MODE=1080p"
-set /p "EXTRA=  Switch (NAME=value, e.g. VICTORY_CARD_MEMORY=0): "
+set /p "EXTRA=  Switches (NAME=value, spaces between, e.g. VICTORY_RELAY=2 VICTORY_CARD_MEMORY=0): "
 exit /b 0
 
 rem Whether MODE is one of the modes.

@@ -46,6 +46,12 @@ leave this file for the commit history.
     keeps the wide threads awake between batches (off); test it.
   - ~100 `ExecuteCommandLists` a frame; the GPU submissions themselves
     ~15 ms a frame of the thread.
+- **Pop-in after camera cuts** (3D cutscenes): models that show after a cut
+  are the low-detail ones and come in slowly; several quick cuts in a row
+  leave the middle ones blocky; a scene given a few seconds loads fine. If
+  the title's streaming works a budget per frame, it gets 4-5 turns a second
+  here instead of 30: the frame rate first, then see whether streaming
+  (DirectStorage, uploads) is slow on its own.
 - **A recipe others report from 2 to 14 fps** (12 GB cards), to try one at a
   time at the river: `VICTORY_CARD_BUFFERS_MIN_KB=64` (we have 1 MB),
   `VICTORY_LEVELS_ON_DEMAND=1`, `VICTORY_RAW_VIEWS=0` (check the picture).
