@@ -44,6 +44,11 @@ rem buffers, which the submitting thread waits for (26 November: 3.4 fps,
 rem 190 ms a frame waiting for the card while it ran 80 ms of work).
 if not defined VICTORY_CARD_BUFFERS_MIN_MB set VICTORY_CARD_BUFFERS_MIN_MB=1
 if not defined VICTORY_CARD_BUFFERS_MB set VICTORY_CARD_BUFFERS_MB=1024
+rem DirectStorage, the game's streaming: the oldest batch of reads first (the
+rem game waits on its oldest when 16 are outstanding) and workers on the
+rem physical cores; the staging floor is 256 MB in the code (the game asks 32).
+if not defined VICTORY_DSTORAGE_OLDEST_FIRST set VICTORY_DSTORAGE_OLDEST_FIRST=1
+if not defined VICTORY_DSTORAGE_WORKERS set VICTORY_DSTORAGE_WORKERS=physical
 rem The largest level of big textures (1024 texels and more) left out: a
 rem quarter of the bytes to upload, so textures the shaders pick are there
 rem sooner (black faces and surfaces that load in late); softer up close.
