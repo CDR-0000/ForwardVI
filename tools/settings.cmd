@@ -40,6 +40,11 @@ rem buffers, which the submitting thread waits for (26 November: 3.4 fps,
 rem 190 ms a frame waiting for the card while it ran 80 ms of work).
 if not defined VICTORY_CARD_BUFFERS_MIN_MB set VICTORY_CARD_BUFFERS_MIN_MB=1
 if not defined VICTORY_CARD_BUFFERS_MB set VICTORY_CARD_BUFFERS_MB=1024
+rem The largest level of big textures (1024 texels and more) left out: a
+rem quarter of the bytes to upload, so textures the shaders pick are there
+rem sooner (black faces and surfaces that load in late); softer up close.
+rem 0 keeps every level.
+if not defined VICTORY_TEXTURE_MIP_DROP set VICTORY_TEXTURE_MIP_DROP=1
 rem The title's 30 fps cap lifted to 60: our clock and its own setting.
 if not defined VICTORY_FRAME_INTERVAL_MS set VICTORY_FRAME_INTERVAL_MS=16.667
 set VICTORY_LOG=info
