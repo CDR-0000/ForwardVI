@@ -15,11 +15,14 @@ rem                           OptiScaler release in OPTISCALER_DIR (default: an
 rem                           OptiScaler folder beside this one); OPTI_UPSCALER
 rem                           picks its upscaler (dlss by default).
 rem   run.bat 1080p "NAME=value NAME=value"   more switches, for a test run
+rem   run.bat diag "NAME=value ..."   1080p with the diagnostics build (build.bat
+rem                           diag, precompile.bat diag): its switches such as
+rem                           VICTORY_GPU_TIMING=1 and VICTORY_D3D12_DRED=1 work
+rem                           there only
 rem
 rem A new mode: a line in :menu, a line in :mode, and what it sets in :set_<mode>.
 setlocal
 cd /d "%~dp0"
-call "%~dp0tools\common.cmd" || (pause & exit /b 1)
 set "MODE=%~1"
 set "EXTRA=%~2"
 set "FROM_MENU="
@@ -28,6 +31,9 @@ if not defined MODE (
   call :menu
 )
 call :mode || (pause & exit /b 1)
+rem The diagnostics mode runs the diagnostics build (tools\common.cmd).
+if /i "%MODE%"=="diag" set "FV_BUILD=diag"
+call "%~dp0tools\common.cmd" || (pause & exit /b 1)
 rem From the menu, with a test save kept (save.bat keep): start from it?
 set "FROM_SAVE="
 if defined FROM_MENU if exist "%DATA%-test-save" set /p "FROM_SAVE=  Start from the test save? (Enter: yes, n: no): "
@@ -97,28 +103,38 @@ echo     1  1080p   native 1080p (default)
 echo     2  4k      the console's 4K mode
 echo     3  opti    Series S 1280x720 upscaled to 1080p by OptiScaler, with frame generation
 echo     4  test    1080p with switches you type (NAME=value, spaces between them)
+echo     5  diag    as test, with the diagnostics build (build.bat diag first)
 echo.
 set "PICK="
-set /p "PICK=  Choose 1-4 (Enter: 1): "
+set /p "PICK=  Choose 1-5 (Enter: 1): "
 if not defined PICK set PICK=1
 if "%PICK%"=="1" set "MODE=1080p"
 if "%PICK%"=="2" set "MODE=4k"
 if "%PICK%"=="3" set "MODE=opti"
 if "%PICK%"=="4" goto :menu_test
+if "%PICK%"=="5" goto :menu_diag
 if not defined MODE goto :menu
 exit /b 0
 :menu_test
 set "MODE=1080p"
 set /p "EXTRA=  Switches (NAME=value, spaces between, e.g. VICTORY_RELAY=2 VICTORY_CARD_MEMORY=0): "
 exit /b 0
+:menu_diag
+set "MODE=diag"
+set /p "EXTRA=  Switches (NAME=value, spaces between, e.g. VICTORY_GPU_TIMING=1 VICTORY_D3D12_DRED=1): "
+exit /b 0
 
 rem Whether MODE is one of the modes.
 :mode
-for %%m in (1080p 4k opti) do if /i "%MODE%"=="%%m" exit /b 0
-echo Unknown launch mode: %MODE% (1080p, 4k, opti)
+for %%m in (1080p 4k opti diag) do if /i "%MODE%"=="%%m" exit /b 0
+echo Unknown launch mode: %MODE% (1080p, 4k, opti, diag)
 exit /b 1
 
 :set_1080p
+set VICTORY_DISPLAY_MODE=1920x1080
+exit /b 0
+
+:set_diag
 set VICTORY_DISPLAY_MODE=1920x1080
 exit /b 0
 

@@ -8,6 +8,9 @@ rem   precompile.bat         the pipelines earlier runs drew with (a few thousan
 rem   precompile.bat -full   every pipeline the game has created in a run so far
 rem                          (tens of thousands: long, about 10-15 GB of the
 rem                          driver's cache; those runs drew with first)
+rem   precompile.bat diag    with the diagnostics build (build.bat diag): the
+rem                          driver keeps pipelines per exe, so it needs its own
+rem                          (diag and -full go together too)
 rem
 rem run.bat writes down which pipelines the game creates and draws with; each
 rem run adds to the list. Either way it goes on where it stopped if you close it.
@@ -16,15 +19,23 @@ setlocal
 cd /d "%~dp0"
 set "WARM=--used"
 set "WHICH=the pipelines earlier runs drew with (precompile.bat -full: every one the game created)"
+:options
+if "%~1"=="" goto :options_done
 if /i "%~1"=="-full" (
   set "WARM="
   set "WHICH=every pipeline the game has created, those runs drew with first"
-) else if not "%~1"=="" (
-  echo Unknown option: %~1   ^(precompile.bat, or precompile.bat -full^)
+) else if /i "%~1"=="diag" (
+  set "FV_BUILD=diag"
+) else (
+  echo Unknown option: %~1   ^(precompile.bat [-full] [diag]^)
   pause
   exit /b 1
 )
+shift
+goto :options
+:options_done
 call "%~dp0tools\common.cmd" || (pause & exit /b 1)
+echo == [%time%] With %EXE% ==
 rem The switches run.bat runs with, so the shaders and pipelines made here are
 rem the ones the game asks for.
 call "%~dp0tools\settings.cmd"
