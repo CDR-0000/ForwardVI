@@ -8,8 +8,16 @@
 //!   second" read 1-2 fps when one stall of a second fell in it, at 200-300
 //!   ms frames. Its own thread paints it four times a second from the kept
 //!   times; the presenting thread only adds two numbers under a lock.
-//! - `VICTORY_FRAME_LOG=<file>`: one line per frame (`frame,ms,draws`),
-//!   flushed every second, for comparing runs frame by frame.
+//! - `VICTORY_FRAME_LOG=<file>`: one line per frame, flushed every second,
+//!   for comparing runs frame by frame: `frame,ms,draws`, then what came
+//!   between that present and the one before, of the frame line's numbers
+//!   ([`crate::host::frame_counters`]): ms preparing submissions, waiting
+//!   for the card in them, copying back; ms the submitting thread worked;
+//!   ms the card had nothing of ours queued, of that while the submitting
+//!   thread worked, and that thread stood for the card; MB of title memory
+//!   copied up and copied back. (Those counters go back to 0 with the
+//!   frame-rate line once a second: that frame's numbers lack what came
+//!   before it in the frame.)
 
 use std::collections::VecDeque;
 use std::sync::{Mutex, OnceLock};
@@ -28,6 +36,8 @@ struct Times {
     drawn: u64,
     log: Option<std::io::BufWriter<std::fs::File>>,
     flushed: Option<Instant>,
+    /// [`counters_now`] at the last present (with the frame log only).
+    counters: [u64; COUNTERS],
 }
 
 static TIMES: Mutex<Times> = Mutex::new(Times {
@@ -38,7 +48,25 @@ static TIMES: Mutex<Times> = Mutex::new(Times {
     drawn: 0,
     log: None,
     flushed: None,
+    counters: [0; COUNTERS],
 });
+
+/// The frame log's columns after `frame,ms,draws`.
+const COUNTERS: usize = 9;
+const COLUMNS: &str =
+    "prep_ms,gpu_wait_ms,back_ms,busy_ms,card_idle_ms,idle_behind_us_ms,stood_ms,up_mb,back_mb";
+
+/// [`crate::host::frame_counters`] now (zeros without a host).
+fn counters_now() -> [u64; COUNTERS] {
+    #[cfg(windows)]
+    {
+        crate::host::frame_counters()
+    }
+    #[cfg(not(windows))]
+    {
+        [0; COUNTERS]
+    }
+}
 
 fn times() -> std::sync::MutexGuard<'static, Times> {
     TIMES.lock().unwrap_or_else(|e| e.into_inner())
@@ -53,6 +81,11 @@ pub(crate) fn presented() {
     let drawn = crate::draw::drawn();
     let mut t = times();
     let draws = drawn.saturating_sub(std::mem::replace(&mut t.drawn, drawn)).min(u64::from(u32::MAX)) as u32;
+    // What came since the last present (a counter now below its last value went back to 0).
+    let counters = if log.is_some() { counters_now() } else { [0; COUNTERS] };
+    let before = std::mem::replace(&mut t.counters, counters);
+    let came: [u64; COUNTERS] =
+        std::array::from_fn(|i| if counters[i] >= before[i] { counters[i] - before[i] } else { counters[i] });
     let Some(last) = t.last.replace(now) else {
         drop(t);
         start_graph();
@@ -72,7 +105,7 @@ pub(crate) fn presented() {
             match std::fs::File::create(path) {
                 Ok(f) => {
                     let mut w = std::io::BufWriter::new(f);
-                    let _ = writeln!(w, "frame,ms,draws");
+                    let _ = writeln!(w, "frame,ms,draws,{COLUMNS}");
                     t.log = Some(w);
                 }
                 Err(e) => tracing::warn!(error = %e, path, "no frame log"),
@@ -80,7 +113,21 @@ pub(crate) fn presented() {
         }
         let frame = t.frames;
         if let Some(w) = t.log.as_mut() {
-            let _ = writeln!(w, "{frame},{ms:.2},{draws}");
+            let ms_of = |us: u64| us as f64 / 1e3;
+            let mb_of = |bytes: u64| bytes as f64 / 1e6;
+            let _ = writeln!(
+                w,
+                "{frame},{ms:.2},{draws},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2}",
+                ms_of(came[0]),
+                ms_of(came[1]),
+                ms_of(came[2]),
+                ms_of(came[3]),
+                ms_of(came[4]),
+                ms_of(came[5]),
+                ms_of(came[6]),
+                mb_of(came[7]),
+                mb_of(came[8])
+            );
         }
         if t.flushed.is_some_and(|f| now - f >= std::time::Duration::from_secs(1)) {
             t.flushed = Some(now);

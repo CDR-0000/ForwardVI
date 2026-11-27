@@ -783,6 +783,27 @@ fn working(on: bool) -> bool {
     since != 0
 }
 
+/// What the frame log's columns are taken from ([`crate::framegraph`], `VICTORY_FRAME_LOG`), as
+/// they stand now: microseconds preparing submissions, waiting for the card in them and copying
+/// back ([`SUBMISSION_US`], [`COPY_BACK`]); the submitting thread working ([`worked`]); the card
+/// with nothing of ours queued, of that while the submitting thread worked, and that thread
+/// standing for the card ([`CARD_CLOCK_US`]); bytes of title memory copied up and copied back.
+/// All but the working one go back to 0 with the frame-rate line.
+pub(crate) fn frame_counters() -> [u64; 9] {
+    let get = |a: &std::sync::atomic::AtomicU64| a.load(Ordering::Relaxed);
+    [
+        get(&SUBMISSION_US[0]),
+        get(&SUBMISSION_US[1]),
+        get(&COPY_BACK[0]),
+        worked(),
+        get(&CARD_CLOCK_US[0]),
+        get(&CARD_CLOCK_US[1]),
+        get(&CARD_CLOCK_US[2]),
+        get(&PREPARING[1]),
+        get(&COPY_BACK[1]),
+    ]
+}
+
 /// [`WORKING`] as of now: microseconds worked so far.
 fn worked() -> u64 {
     let since = WORKING[1].load(Ordering::Relaxed);
