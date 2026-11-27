@@ -6418,6 +6418,12 @@ impl HostList {
         self.batches_common();
         self.card_budget_out();
         self.take_coming();
+        // The last note's range ([`Self::note`]) ends with the list.
+        #[cfg(feature = "diagnostics")]
+        if dred_on() && !self.notes.lock().unwrap_or_else(|e| e.into_inner()).is_empty() {
+            // SAFETY: an open list with a range begun by the last note.
+            unsafe { self.list.EndEvent() };
+        }
         #[cfg(feature = "diagnostics")]
         if let Some((heap, back)) = self.stamps() {
             let count = (self.notes.lock().unwrap_or_else(|e| e.into_inner()).len() as u32).min(STAMPS - 1);
@@ -6954,6 +6960,16 @@ impl HostList {
             unsafe {
                 self.list.SetMarker(UNICODE, Some(text.as_ptr().cast()), 2 * text.len() as u32)
             };
+            // And as a range from here to the next note or the list's close ([`Self::close`]):
+            // Nsight's GPU Trace names its ranges by events, not by lone markers (a trace of
+            // run 2026-11-27 12:17 had no names at all).
+            // SAFETY: as above; every range begun is ended (here, or when the list closes).
+            unsafe {
+                if at > 0 {
+                    self.list.EndEvent();
+                }
+                self.list.BeginEvent(UNICODE, Some(text.as_ptr().cast()), 2 * text.len() as u32);
+            }
             self.notes
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
