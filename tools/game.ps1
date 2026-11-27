@@ -6,10 +6,11 @@
 #                   folder and the file name and writes both into victory.toml.
 #   game.ps1 -Env   (the other .bat files) prints `set` lines for them:
 #                   G (the game folder), GAME_EXE (the exe's full path), LOGS
-#                   (where run logs go) and NSIGHT_CACHE (the Nsight runs' cache);
+#                   (where run logs go), NSIGHT_CACHE (the Nsight runs' cache) and
+#                   DATA (what the title saves; save.bat keeps a test save of it);
 #                   GAME_MISSING=1 if the game is not set yet.
 #
-# VICTORY_GAME_DIR / VICTORY_GAME_EXE, VICTORY_CACHE_DIR override victory.toml, as
+# VICTORY_GAME_DIR / VICTORY_GAME_EXE, VICTORY_CACHE_DIR, VICTORY_DATA_DIR override victory.toml, as
 # they do for the program itself. Logs go to the logs folder here
 # (VICTORY_LOGS_DIR overrides), the Nsight runs' cache to "cache-nsight" beside the cache folder.
 param([switch]$Ask, [switch]$Env)
@@ -28,7 +29,7 @@ function Read-Paths {
       elseif ($line -match '^\s*(\w+)\s*=\s*"((?:[^"\\]|\\.)*)"') { $values[$Matches[1]] = ($Matches[2] -replace '\\\\', '\') }
     }
   }
-  foreach ($pair in @(@('game_dir', 'VICTORY_GAME_DIR'), @('game_exe', 'VICTORY_GAME_EXE'), @('cache_dir', 'VICTORY_CACHE_DIR'))) {
+  foreach ($pair in @(@('game_dir', 'VICTORY_GAME_DIR'), @('game_exe', 'VICTORY_GAME_EXE'), @('cache_dir', 'VICTORY_CACHE_DIR'), @('data_dir', 'VICTORY_DATA_DIR'))) {
     $from = [Environment]::GetEnvironmentVariable($pair[1])
     if ($from) { $values[$pair[0]] = $from }
   }
@@ -109,6 +110,9 @@ if ($Env) {
   "set ""GAME_EXE=$found"""
   "set ""LOGS=$logs"""
   "set ""NSIGHT_CACHE=$(Join-Path $base 'cache-nsight')"""
+  $data = $values['data_dir']
+  if (-not $data) { $data = Join-Path $env:LOCALAPPDATA 'victory\data' }
+  "set ""DATA=$($data.TrimEnd('\'))"""
   exit 0
 }
 'Use -Ask or -Env.'

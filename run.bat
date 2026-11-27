@@ -22,8 +22,18 @@ cd /d "%~dp0"
 call "%~dp0tools\common.cmd" || (pause & exit /b 1)
 set "MODE=%~1"
 set "EXTRA=%~2"
-if not defined MODE call :menu
+set "FROM_MENU="
+if not defined MODE (
+  set "FROM_MENU=1"
+  call :menu
+)
 call :mode || (pause & exit /b 1)
+rem From the menu, with a test save kept (save.bat keep): start from it?
+set "FROM_SAVE="
+if defined FROM_MENU if exist "%DATA%-test-save" set /p "FROM_SAVE=  Start from the test save? (Enter: yes, n: no): "
+if defined FROM_MENU if exist "%DATA%-test-save" if /i not "%FROM_SAVE%"=="n" (
+  call "%~dp0save.bat" restore || (pause & exit /b 1)
+)
 for /f %%t in ('powershell -NoProfile -Command "Get-Date -Format yyyy-MM-dd_HHmmss"') do set "STAMP=%%t"
 
 rem The switches (shared with the nsight-*.bat files), then the mode's.
