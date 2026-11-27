@@ -164,13 +164,19 @@ pub fn precompile(container: &[u8]) -> Result<bool, String> {
 }
 
 /// The translation of a console shader container, from the cache when
-/// there is one.
+/// there is one; with `VICTORY_NATIVE_SHADERS`, a hand-written shader's DXIL
+/// in place of its own ([`crate::native_shaders`]; the cache keeps the
+/// translation).
 pub(crate) fn host_shader(container: &[u8]) -> Result<HostShader, String> {
     let translate = |c: &[u8]| victory_shader::emit::translate(c).map_err(|e| e.to_string());
-    match CACHE.get() {
+    let mut shader = match CACHE.get() {
         Some(cache) => cached(cache, &build(), container, translate, refresh_in_runs()),
         None => translate(container),
+    }?;
+    if let Some(dxil) = crate::native_shaders::replacement(container) {
+        shader.dxil = dxil;
     }
+    Ok(shader)
 }
 
 /// The cache entry's converter: the build and the container in, the

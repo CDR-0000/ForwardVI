@@ -1154,13 +1154,15 @@ thread_local! {
     pub(super) static TEST_RDNA: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
 }
 
-/// The bits of [`super::rdna`] that count on this host.
+/// The bits of [`super::rdna`] that count on this host: [`super::rdna_float`]
+/// on AMD RDNA, [`super::fast_float`] (none unless asked for) elsewhere.
 pub(super) fn host_rdna() -> u32 {
     #[cfg(test)]
     if let Some(bits) = TEST_RDNA.get() {
         return bits;
     }
-    if HOST_RDNA.load(std::sync::atomic::Ordering::Relaxed) { super::rdna_float() } else { 0 }
+    // (On other hosts the same shorter forms when asked for: `VICTORY_FAST_FLOAT`.)
+    if HOST_RDNA.load(std::sync::atomic::Ordering::Relaxed) { super::rdna_float() } else { super::fast_float() }
 }
 
 /// The refusal of a first half of an interpolation whose result is read

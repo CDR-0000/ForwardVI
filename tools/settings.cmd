@@ -56,4 +56,10 @@ rem 0 keeps every level.
 if not defined VICTORY_TEXTURE_MIP_DROP set VICTORY_TEXTURE_MIP_DROP=1
 rem The title's 30 fps cap lifted to 60: our clock and its own setting.
 if not defined VICTORY_FRAME_INTERVAL_MS set VICTORY_FRAME_INTERVAL_MS=16.667
+rem Being tried (test switches, not set here yet):
+rem   VICTORY_NATIVE_SHADERS=1  hand-written shaders (native\README.md) in place
+rem                             of their translations
+rem   VICTORY_FAST_FLOAT=15     shorter forms of four console float instructions
+rem                             (a zero's sign may differ); precompile.bat with
+rem                             it set too, as it changes every translation
 set VICTORY_LOG=info

@@ -228,7 +228,7 @@ pub fn shader_opt() -> u32 {
 /// written as the one host operation the driver makes the same instruction
 /// of, instead of spelled out in operations every host agrees on.
 /// `VICTORY_RDNA_FLOAT`: a set of [`rdna`]'s bits (decimal or `0x` hex); all
-/// of them when it is unset, `0` none. Nothing on other hosts.
+/// of them when it is unset, `0` none. Other hosts: [`fast_float`].
 ///
 /// Measured on an RX 7900 XTX (a frame of the yard, replayed turn by turn with
 /// and without): the title's dispatches and draws 18.4 -> 17.6 ms, 0.4 of it
@@ -245,7 +245,26 @@ pub fn rdna_float() -> u32 {
     })
 }
 
-/// The bits of [`rdna_float`].
+/// On other hosts (NVIDIA): which of [`rdna`]'s shorter forms are used all the
+/// same, `VICTORY_FAST_FLOAT` (the same bits, decimal or `0x` hex; unset or
+/// `0`: none, every one of those console float instructions spelled out
+/// exactly, as before). There the driver makes no single instruction of them;
+/// they are fewer operations, and differ from the console at its edges only:
+/// the sign of a zero (a legacy product, a maximum or minimum of two zeros),
+/// `v_med3` of a no-number, `v_fract` of the smallest negatives. On a shadow
+/// pass program (`5cf00dc39042edaf`) all four took 12,682 operations to
+/// 12,131, 343 selects and 311 compares fewer.
+///
+/// Part of the translation, as [`rdna_float`] is: the shader cache keys on it.
+pub fn fast_float() -> u32 {
+    static BITS: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *BITS.get_or_init(|| {
+        let value = std::env::var("VICTORY_FAST_FLOAT").ok();
+        parse_set(value.as_deref(), 0, rdna::ALL)
+    })
+}
+
+/// The bits of [`rdna_float`] and [`fast_float`].
 pub mod rdna {
     /// `v_max_f32` and the like: the host's FMax and FMin, without the code
     /// that orders -0 below +0.

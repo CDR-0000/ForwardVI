@@ -42,6 +42,10 @@ echo on
 cargo build %CARGO_ARGS%
 @echo off
 if errorlevel 1 goto :failed
+rem The hand-written shaders (native\README.md), when there are any.
+echo.
+call "%~dp0tools\native-shaders.cmd"
+if errorlevel 1 goto :failed
 echo.
 echo == [%time%] Build finished: %cd%\target\%PROFILE%\victory.exe ==
 pause
