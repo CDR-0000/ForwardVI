@@ -23,6 +23,19 @@ if /i "%~1"=="diag" (
 echo == [%time%] Game ==
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\game.ps1" -Ask
 if errorlevel 1 goto :failed
+rem The diagnostics build asks for the D3D12 Agility SDK runtime beside it
+rem (target\diag\D3D12\D3D12Core.dll; without it no device is made): fetched
+rem once from nuget.org, Microsoft's package at a pinned version, its SHA-512
+rem checked (cargo xtask agility). For this build alone: the release build
+rem keeps Windows' own D3D12.
+if /i "%PROFILE%"=="diag" if not exist "%cd%\target\diag\D3D12\D3D12Core.dll" (
+  echo.
+  echo == [%time%] D3D12 Agility SDK runtime for the diagnostics build ==
+  echo on
+  cargo xtask agility --profile diag
+  @echo off
+  if errorlevel 1 goto :failed
+)
 echo.
 echo == [%time%] Building ForwardVI (%PROFILE%) in %cd% ==
 echo on

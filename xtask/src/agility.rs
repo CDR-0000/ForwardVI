@@ -38,13 +38,28 @@ const FILES: &[&str] = &[
 /// The profiles victory.exe is built with (README).
 const PROFILES: &[&str] = &["debug", "release", "diag"];
 
-pub fn run(root: &Path, target: &Path) -> Result<()> {
+/// `profiles`: those alone (`--profile`), or with none given every one of
+/// [`PROFILES`]. (`build.bat diag` gives the diagnostics build alone the
+/// runtime: the release build keeps the in-box one.)
+pub fn run(root: &Path, target: &Path, profiles: &[String]) -> Result<()> {
+    for profile in profiles {
+        ensure!(
+            PROFILES.contains(&profile.as_str()),
+            "unknown profile {profile} (one of {})",
+            PROFILES.join(", ")
+        );
+    }
+    let profiles: Vec<&str> = if profiles.is_empty() {
+        PROFILES.to_vec()
+    } else {
+        profiles.iter().map(String::as_str).collect()
+    };
     let package = fetch(target)?;
     let files = FILES
         .iter()
         .map(|name| Ok((*name, extract(&package, name)?)))
         .collect::<Result<Vec<_>>>()?;
-    for profile in PROFILES {
+    for profile in profiles {
         let dir = target.join(profile).join("D3D12");
         std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
         for (name, bytes) in &files {

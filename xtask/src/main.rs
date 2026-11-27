@@ -35,6 +35,11 @@ enum Cmd {
         /// Cargo's target folder. Default: `CARGO_TARGET_DIR`, else `target`.
         #[arg(long)]
         target_dir: Option<PathBuf>,
+        /// Only these profiles (again for more), e.g. `--profile diag`: a
+        /// profile given the runtime exports the SDK symbols from its next
+        /// build on. Default: debug, release and diag.
+        #[arg(long = "profile")]
+        profiles: Vec<String>,
     },
 }
 
@@ -55,11 +60,11 @@ fn main() -> Result<()> {
             println!("hooks installed: commits now run `cargo xtask policy --staged`");
             Ok(())
         }
-        Cmd::Agility { target_dir } => {
+        Cmd::Agility { target_dir, profiles } => {
             let target = target_dir
                 .or_else(|| std::env::var_os("CARGO_TARGET_DIR").map(PathBuf::from))
                 .unwrap_or_else(|| root.join("target"));
-            agility::run(&root, &target)
+            agility::run(&root, &target, &profiles)
         }
     }
 }
